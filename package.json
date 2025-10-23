@@ -1,13 +1,15 @@
 {
   "name": "website-vpn-proxy",
   "version": "1.0.0",
+  "description": "Authenticated HTTP proxy for browser Service Worker (authorized users only)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
     "express": "^4.18.2",
-    "node-fetch": "^2.6.12"
+    "node-fetch": "^2.6.12",
+    "express-rate-limit": "^6.7.0"
   },
   "engines": {
     "node": ">=14"
