@@ -1,17 +1,13 @@
 {
   "name": "rotating-proxy-gateway",
   "version": "1.0.0",
-  "description": "Rotating multi-region proxy gateway for authenticated requests",
   "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
+  "scripts": { "start": "node server.js" },
   "dependencies": {
     "express": "^4.18.2",
     "node-fetch": "^2.6.12",
-    "express-rate-limit": "^6.7.0"
+    "express-rate-limit": "^6.7.0",
+    "dotenv": "^16.3.1"
   },
-  "engines": {
-    "node": ">=14"
-  }
+  "engines": { "node": ">=14" }
 }
