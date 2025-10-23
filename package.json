@@ -1,7 +1,7 @@
 {
-  "name": "website-vpn-proxy",
+  "name": "rotating-proxy-gateway",
   "version": "1.0.0",
-  "description": "Authenticated HTTP proxy for browser Service Worker (authorized users only)",
+  "description": "Gateway that rotates proxied requests across a pool of upstream proxy nodes",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
