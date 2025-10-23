@@ -1,104 +1,59 @@
-require('dotenv').config();
-const express = require('express');
-const fetch = require('node-fetch');
-const rateLimit = require('express-rate-limit');
-const { URL } = require('url');
+// server.js
+import express from "express";
+import axios from "axios";
+import cron from "node-cron";
 
 const app = express();
-app.use(express.json({ limit: '5mb' }));
-app.use(express.raw({ type: '*/*', limit: '15mb' }));
-
 const PORT = process.env.PORT || 3000;
-const VALID_TOKENS = (process.env.VALID_TOKENS || '').split(',').map(s => s.trim());
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim());
-const PROXY_NODES = (process.env.PROXY_NODES || '').split(',').map(s => s.trim());
-const ROTATION_MODE = process.env.ROTATION_MODE || 'round_robin';
-const PROXY_RATE_LIMIT = parseInt(process.env.PROXY_RATE_LIMIT || '120', 10);
 
-if (!PROXY_NODES.length) {
-  console.error('ERROR: PROXY_NODES env var is required');
-  process.exit(1);
-}
+// === List of URLs to keep alive ===
+const urls = [
+  "https://api-server-2-dkuk.onrender.com",
+  "https://server-validation-expiry.onrender.com",
+  "https://paymentserver-wr8h.onrender.com",
+  "https://quantum-payment-server-900.onrender.com",
+  "https://cronjob-w2t8.onrender.com",
+  "https://quantum-payment-server-900-41dk.onrender.com",
+  "https://api-server-rg0h.onrender.com",
+];
 
-// CORS
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  if (origin && ALLOWED_ORIGINS.length && ALLOWED_ORIGINS.includes(origin)) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-  } else if (!ALLOWED_ORIGINS.length) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-  }
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,x-proxy-auth');
-  if (req.method === 'OPTIONS') return res.sendStatus(204);
-  next();
-});
+// === Self URL (replace with your deployed link later) ===
+const selfUrl = "https://your-pinger.onrender.com"; // ⚠️ Change this after deployment
 
-// Rate limiter
-app.use(rateLimit({
-  windowMs: 60 * 1000,
-  max: PROXY_RATE_LIMIT
-}));
-
-// Helpers
-function isValidUrl(u) { try { return ['http:', 'https:'].includes(new URL(u).protocol); } catch { return false; } }
-function isValidToken(t) { return t && VALID_TOKENS.includes(t); }
-
-let rrCounter = 0;
-function pickNodeRoundRobin() {
-  const idx = (rrCounter++) % PROXY_NODES.length;
-  return PROXY_NODES[idx];
-}
-function selectUpstream(req) {
-  return ROTATION_MODE === 'sticky_by_ip' ? PROXY_NODES[0] : pickNodeRoundRobin();
-}
-
-// Health
-app.get('/health', (req, res) => res.json({ ok: true, nodes: PROXY_NODES.length, mode: ROTATION_MODE }));
-
-// Proxy
-app.all('/proxy', async (req, res) => {
-  try {
-    const token = req.headers['x-proxy-auth'] || req.query.token;
-    if (!isValidToken(token)) return res.status(401).send('Unauthorized');
-
-    const target = req.query.url;
-    if (!target || !isValidUrl(target)) return res.status(400).send('Invalid url');
-
-    const upstreamBase = selectUpstream(req);
-    const upstreamUrl = `${upstreamBase.replace(/\/$/, '')}/proxy?url=${encodeURIComponent(target)}`;
-
-    const headers = {};
-    for (const [k, v] of Object.entries(req.headers)) {
-      if (!['host','connection','content-length','accept-encoding'].includes(k.toLowerCase())) {
-        headers[k] = v;
-      }
+// === Function to ping all URLs ===
+async function pingServers() {
+  console.log(`\n[${new Date().toISOString()}] 🔁 Starting ping cycle...`);
+  for (const url of urls) {
+    try {
+      const res = await axios.get(url, { timeout: 10000 });
+      console.log(`✅ ${url} - ${res.status}`);
+    } catch (err) {
+      console.log(`❌ ${url} - ${err.message}`);
     }
-    headers['x-proxy-auth'] = token;
+  }
+  console.log(`🕒 Ping cycle done.\n`);
+}
 
-    const fetchOptions = {
-      method: req.method,
-      headers,
-      body: ['GET','HEAD'].includes(req.method) ? undefined : req.body,
-      redirect: 'follow'
-    };
+// === Ping every 5 minutes ===
+cron.schedule("*/5 * * * *", pingServers);
 
-    const upstreamResp = await fetch(upstreamUrl, fetchOptions);
-    upstreamResp.headers.forEach((val, name) => {
-      if (!['connection','transfer-encoding'].includes(name.toLowerCase())) res.setHeader(name, val);
-    });
-
-    res.status(upstreamResp.status);
-    const buffer = await upstreamResp.buffer();
-    res.send(buffer);
-
+// === Self-ping every 10 minutes to stay alive ===
+cron.schedule("*/10 * * * *", async () => {
+  try {
+    const res = await axios.get(selfUrl, { timeout: 10000 });
+    console.log(`🔄 Self ping success (${res.status})`);
   } catch (err) {
-    console.error(err);
-    res.status(502).send('Bad Gateway');
+    console.log(`⚠️ Self ping failed: ${err.message}`);
   }
 });
 
+// === Root route ===
+app.get("/", (req, res) => {
+  res.send("✅ Keep-alive server is running and pinging your servers.");
+});
+
+// === Start server ===
 app.listen(PORT, () => {
-  console.log(`Rotating proxy gateway listening on port ${PORT}`);
-  console.log(`Nodes: ${PROXY_NODES.length}, Mode: ${ROTATION_MODE}`);
+  console.log(`🚀 Keep-alive pinger running on port ${PORT}`);
+  pingServers(); // Initial ping right after start
 });
