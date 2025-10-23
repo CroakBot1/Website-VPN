@@ -1,7 +1,7 @@
 {
   "name": "rotating-proxy-gateway",
   "version": "1.0.0",
-  "description": "Gateway that rotates proxied requests across a pool of upstream proxy nodes",
+  "description": "Rotating multi-region proxy gateway for authenticated requests",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
