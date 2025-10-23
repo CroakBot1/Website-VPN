@@ -14,11 +14,11 @@ const urls = [
   "https://quantum-payment-server-900.onrender.com",
   "https://cronjob-w2t8.onrender.com",
   "https://quantum-payment-server-900-41dk.onrender.com",
-  "https://api-server-rg0h.onrender.com",
+  "https://api-server-rg0h.onrender.com"
 ];
 
-// === Self URL (replace with your deployed link later) ===
-const selfUrl = "https://cron-job-links.onrender.com"; // ⚠️ Change this after deployment
+// === Self URL (your deployed domain) ===
+const selfUrl = "https://cron-job-links.onrender.com/";
 
 // === Function to ping all URLs ===
 async function pingServers() {
