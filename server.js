@@ -18,7 +18,7 @@ const urls = [
 ];
 
 // === Self URL (replace with your deployed link later) ===
-const selfUrl = "https://your-pinger.onrender.com"; // ⚠️ Change this after deployment
+const selfUrl = "https://cron-job-links.onrender.com"; // ⚠️ Change this after deployment
 
 // === Function to ping all URLs ===
 async function pingServers() {
