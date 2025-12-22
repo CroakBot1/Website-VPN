@@ -14,7 +14,10 @@ const urls = [
   "https://quantum-payment-server-900.onrender.com",
   "https://cronjob-w2t8.onrender.com",
   "https://quantum-payment-server-900-41dk.onrender.com",
-  "https://api-server-rg0h.onrender.com"
+  "https://api-server-rg0h.onrender.com",
+
+  // ✅ ADDED LINK
+  "https://tunnelling-website.onrender.com"
 ];
 
 // === Self URL (your deployed domain) ===
@@ -23,6 +26,7 @@ const selfUrl = "https://cron-job-links.onrender.com/";
 // === Function to ping all URLs ===
 async function pingServers() {
   console.log(`\n[${new Date().toISOString()}] 🔁 Starting ping cycle...`);
+
   for (const url of urls) {
     try {
       const res = await axios.get(url, { timeout: 10000 });
@@ -31,6 +35,7 @@ async function pingServers() {
       console.log(`❌ ${url} - ${err.message}`);
     }
   }
+
   console.log(`🕒 Ping cycle done.\n`);
 }
 
