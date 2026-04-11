@@ -1,25 +1,9 @@
 {
-  "name": "keepalive-server",
+  "name": "bybit-render-bot",
   "version": "1.0.0",
-  "description": "Simple Node.js server to keep Render apps awake 24/7 using scheduled pings.",
-  "main": "server.js",
   "type": "module",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "keywords": [
-    "keepalive",
-    "render",
-    "node-cron",
-    "express",
-    "axios",
-    "uptime"
-  ],
-  "author": "Your Name",
-  "license": "MIT",
   "dependencies": {
-    "axios": "^1.7.0",
-    "express": "^4.19.2",
-    "node-cron": "^3.0.3"
+    "axios": "^1.6.0",
+    "dotenv": "^16.4.0"
   }
 }
