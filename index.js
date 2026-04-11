@@ -9,7 +9,7 @@ const API_KEY = process.env.API_KEY;
 const API_SECRET = process.env.API_SECRET;
 
 const SYMBOL = process.env.SYMBOL || "BTCUSDT";
-const MAX_LOSS = Number(process.env.MAX_LOSS ?? -40);
+const MAX_LOSS = Number(process.env.MAX_LOSS ?? -40); // USDT loss limit
 const INTERVAL = Number(process.env.INTERVAL ?? 10000);
 
 const BASE_URL = "https://api.bybit.com";
@@ -43,14 +43,11 @@ async function getPosition() {
 
     const signature = sign(params);
 
-    const url = `${BASE_URL}/v5/position/list`;
-
-    const res = await axios.get(url, {
+    const res = await axios.get(`${BASE_URL}/v5/position/list`, {
       params: { ...params, sign: signature },
     });
 
     const list = res?.data?.result?.list;
-
     if (!list || list.length === 0) return null;
 
     return list[0];
@@ -74,7 +71,7 @@ async function closePosition(side, size) {
       side: side === "Buy" ? "Sell" : "Buy",
       orderType: "Market",
       qty: String(size),
-      reduceOnly: true,
+      timeInForce: "IOC",
     };
 
     const signature = sign(params);
@@ -94,18 +91,21 @@ async function closePosition(side, size) {
 async function monitor() {
   const pos = await getPosition();
 
-  if (!pos || Number(pos.size) === 0) {
+  if (!pos || Number(pos.size) <= 0) {
     console.log("📭 No open position");
     return;
   }
 
   const pnl = Number(pos.unrealisedPnl || 0);
+  const size = pos.size;
+  const side = pos.side;
 
-  console.log(`📊 ${SYMBOL} PnL: ${pnl}`);
+  console.log(`📊 ${SYMBOL} PnL (USDT): ${pnl}`);
 
+  // ================= MAX LOSS RULE =================
   if (pnl <= MAX_LOSS) {
-    console.log("🚨 MAX DRAWDOWN HIT (-40). Closing position...");
-    await closePosition(pos.side, pos.size);
+    console.log(`🚨 MAX LOSS HIT (${MAX_LOSS}). Closing position...`);
+    await closePosition(side, size);
   }
 }
 
