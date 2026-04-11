@@ -1,7 +1,6 @@
 import axios from "axios";
 import crypto from "crypto";
 import dotenv from "dotenv";
-import express from "express";
 
 dotenv.config();
 
@@ -9,28 +8,12 @@ dotenv.config();
 const API_KEY = process.env.API_KEY;
 const API_SECRET = process.env.API_SECRET;
 
-if (!API_KEY || !API_SECRET) {
-  throw new Error("❌ Missing API_KEY or API_SECRET in .env");
-}
-
 const SYMBOL = process.env.SYMBOL || "BTCUSDT";
 const MAX_LOSS = Number(process.env.MAX_LOSS ?? -40);
 const INTERVAL = Number(process.env.INTERVAL ?? 10000);
 
 const BASE_URL = "https://api.bybit.com";
 const RECV_WINDOW = "5000";
-
-// ================= KEEP RENDER ALIVE SERVER =================
-const app = express();
-
-app.get("/", (req, res) => {
-  res.send("🤖 Bybit Bot is running");
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🌐 Server running on port ${PORT}`);
-});
 
 // ================= SIGN FUNCTION =================
 function sign(params) {
@@ -60,7 +43,9 @@ async function getPosition() {
 
     const signature = sign(params);
 
-    const res = await axios.get(`${BASE_URL}/v5/position/list`, {
+    const url = `${BASE_URL}/v5/position/list`;
+
+    const res = await axios.get(url, {
       params: { ...params, sign: signature },
     });
 
@@ -94,10 +79,10 @@ async function closePosition(side, size) {
 
     const signature = sign(params);
 
-    const res = await axios.post(
-      `${BASE_URL}/v5/order/create`,
-      { ...params, sign: signature }
-    );
+    const res = await axios.post(`${BASE_URL}/v5/order/create`, {
+      ...params,
+      sign: signature,
+    });
 
     console.log("✅ POSITION CLOSED:", res.data);
   } catch (err) {
@@ -105,37 +90,30 @@ async function closePosition(side, size) {
   }
 }
 
-// ================= MONITOR LOOP (SAFE) =================
-let running = false;
-
+// ================= MONITOR =================
 async function monitor() {
-  if (running) return; // prevent overlapping loops
-  running = true;
+  const pos = await getPosition();
 
-  try {
-    const pos = await getPosition();
+  if (!pos || Number(pos.size) === 0) {
+    console.log("📭 No open position");
+    return;
+  }
 
-    if (!pos || Number(pos.size) === 0) {
-      console.log("📭 No open position");
-      return;
-    }
+  const pnl = Number(pos.unrealisedPnl || 0);
 
-    const pnl = Number(pos.unrealisedPnl || 0);
+  console.log(`📊 ${SYMBOL} PnL: ${pnl}`);
 
-    console.log(`📊 ${SYMBOL} PnL: ${pnl}`);
-
-    if (pnl <= MAX_LOSS) {
-      console.log("🚨 MAX DRAWDOWN HIT. Closing position...");
-      await closePosition(pos.side, pos.size);
-    }
-  } catch (err) {
-    console.error("MONITOR ERROR:", err.message);
-  } finally {
-    running = false;
+  if (pnl <= MAX_LOSS) {
+    console.log("🚨 MAX DRAWDOWN HIT (-40). Closing position...");
+    await closePosition(pos.side, pos.size);
   }
 }
 
 // ================= START BOT =================
 console.log("🤖 Bybit Bot Running...");
 
-setInterval(monitor, INTERVAL);
+setInterval(() => {
+  monitor().catch((err) =>
+    console.error("MONITOR CRASH:", err.message)
+  );
+}, INTERVAL);
