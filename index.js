@@ -21,7 +21,6 @@ const RECV_WINDOW = "5000";
 const POSITION_CACHE_TTL = 3000;
 const CLOSE_VERIFY_RETRIES = 10;
 const CLOSE_VERIFY_DELAY = 1000;
-const CLOSE_DEDUP_MS = 5000;
 
 /**
  * TRADE_MODE:
@@ -53,6 +52,9 @@ const TRADE_WS_URL =
   TRADE_MODE === "testnet"
     ? "wss://stream-testnet.bybit.com/v5/trade"
     : "wss://stream.bybit.com/v5/trade";
+// NOTE:
+// Demo trade websocket is intentionally NOT used because it returns 404 in practice.
+// So for demo, we disable trade WS and use REST fallback for closePosition().
 
 // ================= VALIDATION =================
 if (!API_KEY || !API_SECRET) {
@@ -80,13 +82,6 @@ let tradeHeartbeat = null;
 let latestPosition = null;
 let latestPositionUpdatedAt = 0;
 
-let lastCloseAttemptAt = 0;
-let lastCloseReason = null;
-let activeCloseReqId = null;
-
-let lastBackupStopSignature = null;
-let backupStopArmedAt = 0;
-
 const pendingTradeRequests = [];
 
 // ================= HELPERS =================
@@ -110,6 +105,7 @@ function startHeartbeat(ws, label) {
   return setInterval(() => {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ op: "ping" }));
+      // console.log(`💓 ${label} ping`);
     }
   }, 20_000);
 }
@@ -129,6 +125,10 @@ function signRestGet(params) {
   return hmacSha256(query);
 }
 
+/**
+ * Bybit V5 POST signing
+ * sign = HMAC_SHA256(timestamp + api_key + recv_window + jsonBodyString)
+ */
 function signRestPost(timestamp, bodyString) {
   return hmacSha256(`${timestamp}${API_KEY}${RECV_WINDOW}${bodyString}`);
 }
@@ -144,81 +144,7 @@ function flushPendingTradeRequests() {
   }
 }
 
-function setLatestPosition(pos) {
-  latestPosition = pos || null;
-  latestPositionUpdatedAt = Date.now();
-}
-
-function clearLatestPosition() {
-  latestPosition = null;
-  latestPositionUpdatedAt = 0;
-}
-
-function isOpenPosition(pos) {
-  return !!pos && Number(pos.size) > 0 && !!pos.side;
-}
-
-function roundPrice(num) {
-  return Number(Number(num).toFixed(2));
-}
-
-function getPositionIdx(pos) {
-  if (pos?.positionIdx !== undefined && pos?.positionIdx !== null) {
-    return Number(pos.positionIdx);
-  }
-  return 0;
-}
-
-function makeBackupSignature(pos) {
-  if (!isOpenPosition(pos)) return null;
-
-  const entryPrice = Number(pos.avgPrice || pos.entryPrice || 0);
-  const size = Number(pos.size || 0);
-  const side = pos.side;
-
-  if (!entryPrice || !size || !side) return null;
-
-  const { stopLossPrice, takeProfitPrice } = computeBackupStopPrices(pos);
-
-  return JSON.stringify({
-    symbol: SYMBOL,
-    side,
-    size: String(size),
-    entryPrice: String(entryPrice),
-    stopLossPrice: String(stopLossPrice),
-    takeProfitPrice: String(takeProfitPrice),
-    positionIdx: getPositionIdx(pos),
-  });
-}
-
-function computeBackupStopPrices(pos) {
-  const entryPrice = Number(pos.avgPrice || pos.entryPrice || 0);
-  const size = Number(pos.size || 0);
-  const side = pos.side;
-
-  if (!entryPrice || !size || !side) {
-    return { stopLossPrice: null, takeProfitPrice: null };
-  }
-
-  const pnlPerPriceMove = size;
-  const stopDistance = Math.abs(MAX_LOSS) / pnlPerPriceMove;
-  const takeDistance = Math.abs(TAKE_PROFIT) / pnlPerPriceMove;
-
-  let stopLossPrice;
-  let takeProfitPrice;
-
-  if (side === "Buy") {
-    stopLossPrice = roundPrice(entryPrice - stopDistance);
-    takeProfitPrice = roundPrice(entryPrice + takeDistance);
-  } else {
-    stopLossPrice = roundPrice(entryPrice + stopDistance);
-    takeProfitPrice = roundPrice(entryPrice - takeDistance);
-  }
-
-  return { stopLossPrice, takeProfitPrice };
-}
-
-// ================= REST =================
+// ================= REST FALLBACKS =================
 async function getPositionViaRest() {
   try {
     const timestamp = Date.now().toString();
@@ -240,13 +166,7 @@ async function getPositionViaRest() {
     const list = res?.data?.result?.list;
     if (!list || list.length === 0) return null;
 
-    const pos = list[0];
-
-    if (!pos || Number(pos.size) <= 0 || !pos.side) {
-      return null;
-    }
-
-    return pos;
+    return list[0];
   } catch (err) {
     console.error("GET POSITION REST ERROR:", err.response?.data || err.message);
     return null;
@@ -285,88 +205,35 @@ async function closePositionViaRest(side, size) {
     }
 
     console.log("✅ POSITION CLOSE SENT VIA REST:", res.data);
-    return res.data;
   } catch (err) {
     console.error("CLOSE POSITION REST ERROR:", err.response?.data || err.message);
     throw err;
   }
 }
 
-async function setTradingStopViaRest(pos) {
-  try {
-    if (!isOpenPosition(pos)) return;
-
-    const { stopLossPrice, takeProfitPrice } = computeBackupStopPrices(pos);
-
-    if (!stopLossPrice || !takeProfitPrice) {
-      console.log("⚠️ Backup stop skipped: missing computed prices");
-      return;
-    }
-
-    const timestamp = Date.now().toString();
-
-    const body = {
-      category: "linear",
-      symbol: SYMBOL,
-      tpslMode: "Full",
-      stopLoss: String(stopLossPrice),
-      takeProfit: String(takeProfitPrice),
-      slTriggerBy: "MarkPrice",
-      tpTriggerBy: "MarkPrice",
-      positionIdx: getPositionIdx(pos),
-    };
-
-    const bodyString = JSON.stringify(body);
-    const sign = signRestPost(timestamp, bodyString);
-
-    const res = await axios.post(`${HTTP_BASE_URL}/v5/position/trading-stop`, body, {
-      headers: {
-        "Content-Type": "application/json",
-        "X-BAPI-API-KEY": API_KEY,
-        "X-BAPI-TIMESTAMP": timestamp,
-        "X-BAPI-RECV-WINDOW": RECV_WINDOW,
-        "X-BAPI-SIGN": sign,
-      },
-    });
-
-    if (res?.data?.retCode !== 0) {
-      throw new Error(`SET TRADING STOP FAILED: ${res?.data?.retMsg || "unknown error"}`);
-    }
-
-    backupStopArmedAt = Date.now();
-    lastBackupStopSignature = makeBackupSignature(pos);
-
-    console.log(
-      `🛡️ BACKUP STOP ARMED | SL=${stopLossPrice} | TP=${takeProfitPrice} | mode=exchange-native`
-    );
-  } catch (err) {
-    console.error("SET TRADING STOP ERROR:", err.response?.data || err.message);
-  }
+// ================= POSITION CACHE =================
+function setLatestPosition(pos) {
+  latestPosition = pos || null;
+  latestPositionUpdatedAt = Date.now();
 }
 
-async function ensureBackupStops(pos) {
-  if (!isOpenPosition(pos)) return;
-
-  const newSig = makeBackupSignature(pos);
-  if (!newSig) return;
-
-  if (newSig === lastBackupStopSignature) {
-    return;
-  }
-
-  await setTradingStopViaRest(pos);
+function clearLatestPosition() {
+  latestPosition = null;
+  latestPositionUpdatedAt = 0;
 }
 
-// ================= POSITION =================
+// ================= GET POSITION =================
 async function getPosition() {
   const isFresh =
     latestPosition && Date.now() - latestPositionUpdatedAt < POSITION_CACHE_TTL;
 
+  // primary = websocket cache, but only if fresh
   if (isFresh) return latestPosition;
 
+  // fallback = REST refresh
   const restPos = await getPositionViaRest();
 
-  if (!restPos) {
+  if (!restPos || Number(restPos.size) <= 0 || !restPos.side) {
     clearLatestPosition();
     return null;
   }
@@ -375,19 +242,16 @@ async function getPosition() {
   return restPos;
 }
 
-// ================= CONFIRMATION =================
+// ================= CLOSE VERIFICATION =================
 async function verifyPositionClosed(retries = CLOSE_VERIFY_RETRIES) {
   for (let i = 0; i < retries; i++) {
     await sleep(CLOSE_VERIFY_DELAY);
 
     const pos = await getPositionViaRest();
 
-    if (!pos) {
+    if (!pos || Number(pos.size) <= 0 || !pos.side) {
       clearLatestPosition();
       currentInterval = SLOW_INTERVAL;
-      lastBackupStopSignature = null;
-      backupStopArmedAt = 0;
-      activeCloseReqId = null;
       console.log("✅ Position confirmed closed");
       return true;
     }
@@ -404,32 +268,20 @@ async function verifyPositionClosed(retries = CLOSE_VERIFY_RETRIES) {
   return false;
 }
 
-function shouldSkipDuplicateClose(reason) {
-  const now = Date.now();
-
-  if (isClosing) return true;
-
-  if (lastCloseReason === reason && now - lastCloseAttemptAt < CLOSE_DEDUP_MS) {
-    console.log(`⏳ Duplicate close prevented (${reason})`);
-    return true;
-  }
-
-  return false;
-}
-
 // ================= CLOSE POSITION =================
-async function closePosition(side, size, reason = "unknown") {
-  if (shouldSkipDuplicateClose(reason)) {
+async function closePosition(side, size) {
+  if (isClosing) {
+    console.log("⏳ Close already in progress, skipping duplicate request...");
     return;
   }
 
   isClosing = true;
-  lastCloseAttemptAt = Date.now();
-  lastCloseReason = reason;
 
   try {
+    // prevent stale cache from being trusted during close flow
     clearLatestPosition();
 
+    // DEMO MODE: always use REST close by default
     if (TRADE_MODE === "demo" && FORCE_REST_CLOSE_ON_DEMO) {
       console.log("🧪 DEMO MODE: using REST fallback close...");
       await closePositionViaRest(side, size);
@@ -437,11 +289,8 @@ async function closePosition(side, size, reason = "unknown") {
       return;
     }
 
-    const reqId = `close-${SYMBOL}-${Date.now()}`;
-    activeCloseReqId = reqId;
-
     const payload = {
-      reqId,
+      reqId: `close-${SYMBOL}-${Date.now()}`,
       header: {
         "X-BAPI-TIMESTAMP": String(Date.now()),
         "X-BAPI-RECV-WINDOW": RECV_WINDOW,
@@ -462,7 +311,7 @@ async function closePosition(side, size, reason = "unknown") {
 
     if (tradeReady && tradeWs?.readyState === WebSocket.OPEN) {
       tradeWs.send(JSON.stringify(payload));
-      console.log(`✅ CLOSE REQUEST SENT VIA WS | reqId=${reqId}`);
+      console.log("✅ CLOSE REQUEST SENT VIA WS");
       await verifyPositionClosed();
     } else {
       console.log("⚠️ TRADE WS not ready, fallback to REST close...");
@@ -486,12 +335,8 @@ async function monitor() {
   if (!pos || Number(pos.size) <= 0 || !pos.side) {
     console.log("📭 No open position");
     currentInterval = SLOW_INTERVAL;
-    lastBackupStopSignature = null;
-    backupStopArmedAt = 0;
     return;
   }
-
-  await ensureBackupStops(pos);
 
   currentInterval = FAST_INTERVAL;
 
@@ -503,13 +348,13 @@ async function monitor() {
 
   if (pnl <= MAX_LOSS) {
     console.log(`🚨 MAX LOSS HIT (${MAX_LOSS}). Closing position...`);
-    await closePosition(side, size, "max_loss");
+    await closePosition(side, size);
     return;
   }
 
   if (pnl >= TAKE_PROFIT) {
     console.log(`🎯 TAKE PROFIT HIT (${TAKE_PROFIT}). Closing position...`);
-    await closePosition(side, size, "take_profit");
+    await closePosition(side, size);
     return;
   }
 }
@@ -583,11 +428,8 @@ function connectPrivateWS() {
 
         if (!pos || Number(pos.size) <= 0 || !pos.side) {
           clearLatestPosition();
-          lastBackupStopSignature = null;
-          backupStopArmedAt = 0;
         } else {
           setLatestPosition(pos);
-          await ensureBackupStops(pos);
         }
 
         await runMonitorSafely("position-stream");
@@ -703,30 +545,6 @@ function connectTradeWS() {
   openConnection();
 }
 
-// ================= STARTUP SYNC =================
-async function syncPositionOnStartup() {
-  try {
-    const pos = await getPositionViaRest();
-
-    if (!pos) {
-      clearLatestPosition();
-      console.log("📭 Startup sync: no open position");
-      return;
-    }
-
-    setLatestPosition(pos);
-    console.log(
-      `🔄 Startup sync: open position detected | side=${pos.side} | size=${pos.size} | pnl=${Number(
-        pos.unrealisedPnl || 0
-      )}`
-    );
-
-    await ensureBackupStops(pos);
-  } catch (err) {
-    console.error("STARTUP SYNC ERROR:", err.message);
-  }
-}
-
 // ================= WATCHDOG =================
 async function startWatchdog() {
   while (running) {
@@ -762,8 +580,6 @@ async function startBot() {
   console.log(`🌐 TRADE_MODE: ${TRADE_MODE}`);
   console.log(`🌍 HTTP: ${HTTP_BASE_URL}`);
   console.log(`🔌 PRIVATE WS: ${PRIVATE_WS_URL}`);
-
-  await syncPositionOnStartup();
 
   connectPrivateWS();
 
