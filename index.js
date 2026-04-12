@@ -10,7 +10,8 @@ const API_SECRET = process.env.API_SECRET;
 
 const SYMBOL = process.env.SYMBOL || "BTCUSDT";
 const MAX_LOSS = Number(process.env.MAX_LOSS ?? -40); // USDT loss limit
-const INTERVAL = Number(process.env.INTERVAL ?? 4000); // ✅ 2 seconds
+const TAKE_PROFIT = Number(process.env.TAKE_PROFIT ?? 45); // ✅ ADDED ONLY
+const INTERVAL = Number(process.env.INTERVAL ?? 4000); // 4 seconds
 
 const BASE_URL = "https://api.bybit.com";
 const RECV_WINDOW = "5000";
@@ -102,10 +103,18 @@ async function monitor() {
 
   console.log(`📊 ${SYMBOL} PnL (USDT): ${pnl}`);
 
-  // ================= MAX LOSS RULE =================
+  // ================= MAX LOSS RULE (UNCHANGED) =================
   if (pnl <= MAX_LOSS) {
     console.log(`🚨 MAX LOSS HIT (${MAX_LOSS}). Closing position...`);
     await closePosition(side, size);
+    return;
+  }
+
+  // ================= TAKE PROFIT RULE (ADDED ONLY) =================
+  if (pnl >= TAKE_PROFIT) {
+    console.log(`🎯 TAKE PROFIT HIT (${TAKE_PROFIT}). Closing position...`);
+    await closePosition(side, size);
+    return;
   }
 }
 
