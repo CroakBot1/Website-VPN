@@ -16,11 +16,10 @@ const TAKE_PROFIT = Number(process.env.TAKE_PROFIT ?? 45);
 const BASE_URL = "https://api.bybit.com";
 const WS_URL = "wss://stream.bybit.com/v5/private";
 
-// ================= SIGN (for auth) =================
-function getExpires() {
-  return Date.now() + 10000;
-}
+// ================= STATE (ANTI DOUBLE CLOSE) =================
+let isClosing = false;
 
+// ================= SIGN FOR REST =================
 function sign(params) {
   const query = Object.keys(params)
     .sort()
@@ -30,8 +29,20 @@ function sign(params) {
   return crypto.createHmac("sha256", API_SECRET).update(query).digest("hex");
 }
 
-// ================= CLOSE POSITION =================
+// ================= WS AUTH SIGN (IMPORTANT FIX) =================
+function wsSign(apiKey, expires) {
+  const payload = `GET/realtime${expires}`;
+  return crypto
+    .createHmac("sha256", API_SECRET)
+    .update(payload)
+    .digest("hex");
+}
+
+// ================= CLOSE POSITION (FIXED V5 FORMAT) =================
 async function closePosition(side, size) {
+  if (isClosing) return; // prevent double trigger
+  isClosing = true;
+
   try {
     const timestamp = Date.now().toString();
 
@@ -49,14 +60,19 @@ async function closePosition(side, size) {
 
     const signature = sign(params);
 
-    const res = await axios.post(`${BASE_URL}/v5/order/create`, {
-      ...params,
-      sign: signature,
+    const res = await axios({
+      method: "POST",
+      url: `${BASE_URL}/v5/order/create`,
+      params: { ...params, sign: signature }, // ✅ FIXED
     });
 
     console.log("✅ CLOSED:", res.data);
   } catch (err) {
     console.error("CLOSE ERROR:", err.response?.data || err.message);
+  } finally {
+    setTimeout(() => {
+      isClosing = false;
+    }, 3000);
   }
 }
 
@@ -67,20 +83,21 @@ function startWS() {
   ws.on("open", () => {
     console.log("🔌 WebSocket Connected");
 
-    const expires = getExpires();
+    const expires = Date.now() + 10000;
 
+    // ✅ FIXED AUTH (BYBIT V5)
     const auth = {
       op: "auth",
-      args: [API_KEY, expires, sign({ api_key: API_KEY, expires })],
+      args: [API_KEY, expires.toString(), wsSign(API_KEY, expires.toString())],
     };
 
     ws.send(JSON.stringify(auth));
 
-    // subscribe positions
+    // ✅ FIXED SUBSCRIPTION
     ws.send(
       JSON.stringify({
         op: "subscribe",
-        args: [`position.linear.${SYMBOL}`],
+        args: ["position"],
       })
     );
   });
@@ -91,11 +108,11 @@ function startWS() {
 
       if (!data.data) return;
 
-      const pos = data.data[0];
+      const pos = Array.isArray(data.data) ? data.data[0] : data.data;
 
       if (!pos || Number(pos.size) <= 0) return;
 
-      const pnl = Number(pos.unrealisedPnl || 0);
+      const pnl = Number(pos.unrealisedPnl ?? 0);
       const size = pos.size;
       const side = pos.side;
 
@@ -121,10 +138,7 @@ function startWS() {
 
   ws.on("close", () => {
     console.log("❌ WebSocket Disconnected... reconnecting in 5s");
-
-    setTimeout(() => {
-      startWS();
-    }, 5000);
+    setTimeout(startWS, 5000);
   });
 
   ws.on("error", (err) => {
