@@ -9,9 +9,9 @@ const API_KEY = process.env.API_KEY;
 const API_SECRET = process.env.API_SECRET;
 
 const SYMBOL = process.env.SYMBOL || "BTCUSDT";
-const MAX_LOSS = Number(process.env.MAX_LOSS ?? -0.01);
+const MAX_LOSS = Number(process.env.MAX_LOSS ?? -40);
 const TAKE_PROFIT = Number(process.env.TAKE_PROFIT ?? 45);
-const INTERVAL = Number(process.env.INTERVAL ?? 2000);
+const INTERVAL = Number(process.env.INTERVAL ?? 5000);
 
 const BASE_URL = "https://api.bybit.com";
 const RECV_WINDOW = "5000";
