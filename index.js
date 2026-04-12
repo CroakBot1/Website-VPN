@@ -19,8 +19,9 @@ const BASE_URL = "https://api.bybit.com";
 // ================= STATE =================
 let ws;
 let isClosing = false;
+let lastTrigger = 0; // anti spam trigger
 
-// ================= SIGN (WS AUTH) =================
+// ================= WS SIGN =================
 function wsSign(timestamp) {
   return crypto
     .createHmac("sha256", API_SECRET)
@@ -28,17 +29,18 @@ function wsSign(timestamp) {
     .digest("hex");
 }
 
-// ================= SIGN (ORDER V5 FIXED) =================
-function orderSign(timestamp, body) {
+// ================= REST SIGN (CORRECT BYBIT V5) =================
+function restSign(timestamp, body) {
   return crypto
     .createHmac("sha256", API_SECRET)
     .update(timestamp + API_KEY + "5000" + body)
     .digest("hex");
 }
 
-// ================= CLOSE POSITION =================
+// ================= CLOSE POSITION (REST) =================
 async function closePosition(side, size) {
-  if (isClosing) return; // prevent double close
+  if (isClosing) return;
+
   isClosing = true;
 
   try {
@@ -54,8 +56,7 @@ async function closePosition(side, size) {
     };
 
     const body = JSON.stringify(params);
-
-    const signature = orderSign(timestamp, body);
+    const sign = restSign(timestamp, body);
 
     const res = await axios.post(
       `${BASE_URL}/v5/order/create`,
@@ -65,13 +66,13 @@ async function closePosition(side, size) {
           "X-BAPI-API-KEY": API_KEY,
           "X-BAPI-TIMESTAMP": timestamp,
           "X-BAPI-RECV-WINDOW": "5000",
-          "X-BAPI-SIGN": signature,
+          "X-BAPI-SIGN": sign,
           "Content-Type": "application/json"
         }
       }
     );
 
-    console.log("✅ POSITION CLOSED:", res.data);
+    console.log("✅ CLOSE EXECUTED:", res.data);
   } catch (err) {
     console.error("❌ CLOSE ERROR:", err.response?.data || err.message);
   } finally {
@@ -112,7 +113,7 @@ function connectWS() {
       );
     }
 
-    // ================= POSITION DATA =================
+    // ================= POSITION UPDATE =================
     if (msg.topic === "position") {
       const list = msg.data?.list || msg.data;
       if (!list) return;
@@ -128,14 +129,20 @@ function connectWS() {
 
       console.log(`📊 ${SYMBOL} PnL: ${pnl}`);
 
-      // ================= RISK RULES =================
+      // ================= ANTI SPAM (IMPORTANT FIX) =================
+      const now = Date.now();
+      if (now - lastTrigger < 5000) return;
+
+      // ================= RULES =================
       if (pnl <= MAX_LOSS) {
-        console.log(`🚨 MAX LOSS HIT: ${pnl}`);
+        console.log(`🚨 MAX LOSS HIT`);
+        lastTrigger = now;
         await closePosition(side, size);
       }
 
       if (pnl >= TAKE_PROFIT) {
-        console.log(`🎯 TAKE PROFIT HIT: ${pnl}`);
+        console.log(`🎯 TAKE PROFIT HIT`);
+        lastTrigger = now;
         await closePosition(side, size);
       }
     }
@@ -153,5 +160,5 @@ function connectWS() {
 }
 
 // ================= START =================
-console.log("🤖 Bybit WS Bot Running (FIXED VERSION)");
+console.log("🤖 WS + REST Hybrid Bot Running...");
 connectWS();
