@@ -1,3 +1,4 @@
+import WebSocket from "ws";
 import axios from "axios";
 import crypto from "crypto";
 import dotenv from "dotenv";
@@ -9,53 +10,24 @@ const API_KEY = process.env.API_KEY;
 const API_SECRET = process.env.API_SECRET;
 
 const SYMBOL = process.env.SYMBOL || "BTCUSDT";
-const MAX_LOSS = Number(process.env.MAX_LOSS ?? -40); // USDT loss limit
-const TAKE_PROFIT = Number(process.env.TAKE_PROFIT ?? 45); // ✅ ADDED ONLY
-const INTERVAL = Number(process.env.INTERVAL ?? 2000); // 2 seconds
+const MAX_LOSS = Number(process.env.MAX_LOSS ?? -40);
+const TAKE_PROFIT = Number(process.env.TAKE_PROFIT ?? 45);
 
 const BASE_URL = "https://api.bybit.com";
-const RECV_WINDOW = "5000";
+const WS_URL = "wss://stream.bybit.com/v5/private";
 
-// ================= SIGN FUNCTION =================
+// ================= SIGN (for auth) =================
+function getExpires() {
+  return Date.now() + 10000;
+}
+
 function sign(params) {
   const query = Object.keys(params)
     .sort()
-    .map((key) => `${key}=${params[key]}`)
+    .map((k) => `${k}=${params[k]}`)
     .join("&");
 
-  return crypto
-    .createHmac("sha256", API_SECRET)
-    .update(query)
-    .digest("hex");
-}
-
-// ================= GET POSITION =================
-async function getPosition() {
-  try {
-    const timestamp = Date.now().toString();
-
-    const params = {
-      api_key: API_KEY,
-      timestamp,
-      recv_window: RECV_WINDOW,
-      category: "linear",
-      symbol: SYMBOL,
-    };
-
-    const signature = sign(params);
-
-    const res = await axios.get(`${BASE_URL}/v5/position/list`, {
-      params: { ...params, sign: signature },
-    });
-
-    const list = res?.data?.result?.list;
-    if (!list || list.length === 0) return null;
-
-    return list[0];
-  } catch (err) {
-    console.error("GET POSITION ERROR:", err.response?.data || err.message);
-    return null;
-  }
+  return crypto.createHmac("sha256", API_SECRET).update(query).digest("hex");
 }
 
 // ================= CLOSE POSITION =================
@@ -66,7 +38,7 @@ async function closePosition(side, size) {
     const params = {
       api_key: API_KEY,
       timestamp,
-      recv_window: RECV_WINDOW,
+      recv_window: "5000",
       category: "linear",
       symbol: SYMBOL,
       side: side === "Buy" ? "Sell" : "Buy",
@@ -82,47 +54,84 @@ async function closePosition(side, size) {
       sign: signature,
     });
 
-    console.log("✅ POSITION CLOSED:", res.data);
+    console.log("✅ CLOSED:", res.data);
   } catch (err) {
-    console.error("CLOSE POSITION ERROR:", err.response?.data || err.message);
+    console.error("CLOSE ERROR:", err.response?.data || err.message);
   }
 }
 
-// ================= MONITOR =================
-async function monitor() {
-  const pos = await getPosition();
+// ================= WEB SOCKET =================
+function startWS() {
+  const ws = new WebSocket(WS_URL);
 
-  if (!pos || Number(pos.size) <= 0) {
-    console.log("📭 No open position");
-    return;
-  }
+  ws.on("open", () => {
+    console.log("🔌 WebSocket Connected");
 
-  const pnl = Number(pos.unrealisedPnl || 0);
-  const size = pos.size;
-  const side = pos.side;
+    const expires = getExpires();
 
-  console.log(`📊 ${SYMBOL} PnL (USDT): ${pnl}`);
+    const auth = {
+      op: "auth",
+      args: [API_KEY, expires, sign({ api_key: API_KEY, expires })],
+    };
 
-  // ================= MAX LOSS RULE (UNCHANGED) =================
-  if (pnl <= MAX_LOSS) {
-    console.log(`🚨 MAX LOSS HIT (${MAX_LOSS}). Closing position...`);
-    await closePosition(side, size);
-    return;
-  }
+    ws.send(JSON.stringify(auth));
 
-  // ================= TAKE PROFIT RULE (ADDED ONLY) =================
-  if (pnl >= TAKE_PROFIT) {
-    console.log(`🎯 TAKE PROFIT HIT (${TAKE_PROFIT}). Closing position...`);
-    await closePosition(side, size);
-    return;
-  }
+    // subscribe positions
+    ws.send(
+      JSON.stringify({
+        op: "subscribe",
+        args: [`position.linear.${SYMBOL}`],
+      })
+    );
+  });
+
+  ws.on("message", async (msg) => {
+    try {
+      const data = JSON.parse(msg.toString());
+
+      if (!data.data) return;
+
+      const pos = data.data[0];
+
+      if (!pos || Number(pos.size) <= 0) return;
+
+      const pnl = Number(pos.unrealisedPnl || 0);
+      const size = pos.size;
+      const side = pos.side;
+
+      console.log(`📊 PnL: ${pnl}`);
+
+      // ================= MAX LOSS =================
+      if (pnl <= MAX_LOSS) {
+        console.log("🚨 MAX LOSS HIT");
+        await closePosition(side, size);
+        return;
+      }
+
+      // ================= TAKE PROFIT =================
+      if (pnl >= TAKE_PROFIT) {
+        console.log("🎯 TAKE PROFIT HIT");
+        await closePosition(side, size);
+        return;
+      }
+    } catch (err) {
+      console.error("WS ERROR:", err.message);
+    }
+  });
+
+  ws.on("close", () => {
+    console.log("❌ WebSocket Disconnected... reconnecting in 5s");
+
+    setTimeout(() => {
+      startWS();
+    }, 5000);
+  });
+
+  ws.on("error", (err) => {
+    console.error("WS ERROR:", err.message);
+  });
 }
 
-// ================= START BOT =================
-console.log("🤖 Bybit Bot Running...");
-
-setInterval(() => {
-  monitor().catch((err) =>
-    console.error("MONITOR CRASH:", err.message)
-  );
-}, INTERVAL);
+// ================= START =================
+console.log("🤖 WebSocket Bot Starting...");
+startWS();
