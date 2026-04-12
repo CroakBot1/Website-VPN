@@ -9,7 +9,7 @@ const API_KEY = process.env.API_KEY;
 const API_SECRET = process.env.API_SECRET;
 
 const SYMBOL = process.env.SYMBOL || "BTCUSDT";
-const MAX_LOSS = Number(process.env.MAX_LOSS ?? -40); // USDT loss limit
+const MAX_LOSS = Number(process.env.MAX_LOSS ?? -0.01); // USDT loss limit
 const INTERVAL = Number(process.env.INTERVAL ?? 2000); // ✅ 2 seconds
 
 const BASE_URL = "https://api.bybit.com";
