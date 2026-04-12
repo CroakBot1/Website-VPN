@@ -9,9 +9,15 @@ const API_KEY = process.env.API_KEY;
 const API_SECRET = process.env.API_SECRET;
 
 const SYMBOL = process.env.SYMBOL || "BTCUSDT";
-const MAX_LOSS = Number(process.env.MAX_LOSS ?? -40);
+const MAX_LOSS = Number(process.env.MAX_LOSS ?? -0.01);
 const TAKE_PROFIT = Number(process.env.TAKE_PROFIT ?? 45);
-const INTERVAL = Number(process.env.INTERVAL ?? 5000);
+const INTERVAL = Number(process.env.INTERVAL ?? 5000); // (unused fallback)
+
+// 🔥 NEW: Dynamic intervals
+const FAST_INTERVAL = 2000;   // kung naay position
+const SLOW_INTERVAL = 10000;  // kung walay position
+
+let currentInterval = SLOW_INTERVAL;
 
 const BASE_URL = "https://api.bybit.com";
 const RECV_WINDOW = "5000";
@@ -86,14 +92,17 @@ async function closePosition(side, size) {
   }
 }
 
-// ================= MONITOR (UNCHANGED LOGIC) =================
+// ================= MONITOR (UNCHANGED LOGIC + INTERVAL SWITCH) =================
 async function monitor() {
   const pos = await getPosition();
 
   if (!pos || Number(pos.size) <= 0) {
     console.log("📭 No open position");
+    currentInterval = SLOW_INTERVAL; // 🔥 idle mode
     return;
   }
+
+  currentInterval = FAST_INTERVAL; // 🔥 active trade mode
 
   const pnl = Number(pos.unrealisedPnl || 0);
   const size = pos.size;
@@ -141,19 +150,21 @@ async function startBot() {
   while (running) {
     try {
       if (isExecuting) {
-        await sleep(200); // prevent overlap
+        await sleep(200);
         continue;
       }
 
       isExecuting = true;
 
-      await monitor(); // 🔥 YOUR ORIGINAL LOGIC
+      await monitor(); // 🔥 ORIGINAL LOGIC
 
       isExecuting = false;
 
       retry = 0;
 
-      await sleep(INTERVAL);
+      // 🔥 UPDATED: dynamic interval
+      await sleep(currentInterval);
+
     } catch (err) {
       isExecuting = false;
 
@@ -175,7 +186,7 @@ async function startBot() {
 
       retry++;
 
-      // HARD RESET MODE (true reconnect behavior)
+      // HARD RESET MODE
       if (retry > 10) {
         console.log("🔄 HARD RECONNECT RESET...");
         retry = 0;
