@@ -33,6 +33,21 @@ const TRADE_MODE = String(process.env.TRADE_MODE || "mainnet").toLowerCase();
 const FORCE_REST_CLOSE_ON_DEMO =
   String(process.env.FORCE_REST_CLOSE_ON_DEMO ?? "true").toLowerCase() === "true";
 
+// ================= TELEGRAM CONFIG =================
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
+const TELEGRAM_LOGS_ENABLED =
+  String(process.env.TELEGRAM_LOGS_ENABLED ?? "true").toLowerCase() === "true";
+const TELEGRAM_HEARTBEAT_MINUTES = Number(process.env.TELEGRAM_HEARTBEAT_MINUTES ?? 10);
+const TELEGRAM_SILENT =
+  String(process.env.TELEGRAM_SILENT ?? "false").toLowerCase() === "true";
+
+let telegramHeartbeat = null;
+let lastTelegramMessageAt = 0;
+const TELEGRAM_MIN_GAP_MS = 1200;
+const telegramQueue = [];
+let telegramSending = false;
+
 // ================= ENV URLS =================
 const HTTP_BASE_URL =
   TRADE_MODE === "testnet"
@@ -84,11 +99,135 @@ let latestPositionUpdatedAt = 0;
 
 const pendingTradeRequests = [];
 
-// ================= HELPERS =================
-function sleep(ms) {
+// ================= LOGGING HELPERS =================
+const rawConsole = {
+  log: console.log.bind(console),
+  error: console.error.bind(console),
+  warn: console.warn.bind(console),
+  info: console.info.bind(console),
+};
+
+function formatLogArgs(args) {
+  return args
+    .map((arg) => {
+      if (typeof arg === "string") return arg;
+      try {
+        return JSON.stringify(arg);
+      } catch {
+        return String(arg);
+      }
+    })
+    .join(" ");
+}
+
+function chunkText(text, max = 3900) {
+  const chunks = [];
+  for (let i = 0; i < text.length; i += max) {
+    chunks.push(text.slice(i, i + max));
+  }
+  return chunks;
+}
+
+async function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+async function sendTelegram(message, options = {}) {
+  if (!TELEGRAM_LOGS_ENABLED) return;
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
+
+  telegramQueue.push({
+    message,
+    disableNotification: options.disableNotification ?? TELEGRAM_SILENT,
+  });
+
+  if (telegramSending) return;
+
+  telegramSending = true;
+
+  try {
+    while (telegramQueue.length > 0) {
+      const item = telegramQueue.shift();
+      const chunks = chunkText(item.message);
+
+      for (const part of chunks) {
+        const gap = Date.now() - lastTelegramMessageAt;
+        if (gap < TELEGRAM_MIN_GAP_MS) {
+          await sleep(TELEGRAM_MIN_GAP_MS - gap);
+        }
+
+        await axios.post(
+          `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+          {
+            chat_id: TELEGRAM_CHAT_ID,
+            text: part,
+            disable_notification: item.disableNotification,
+          },
+          {
+            timeout: 15000,
+          }
+        );
+
+        lastTelegramMessageAt = Date.now();
+      }
+    }
+  } catch (err) {
+    rawConsole.error("TELEGRAM ERROR:", err.response?.data || err.message);
+  } finally {
+    telegramSending = false;
+  }
+}
+
+function installTelegramConsoleMirror() {
+  console.log = (...args) => {
+    rawConsole.log(...args);
+    const text = formatLogArgs(args);
+    sendTelegram(`ℹ️ ${text}`).catch(() => {});
+  };
+
+  console.info = (...args) => {
+    rawConsole.info(...args);
+    const text = formatLogArgs(args);
+    sendTelegram(`ℹ️ ${text}`).catch(() => {});
+  };
+
+  console.warn = (...args) => {
+    rawConsole.warn(...args);
+    const text = formatLogArgs(args);
+    sendTelegram(`⚠️ ${text}`).catch(() => {});
+  };
+
+  console.error = (...args) => {
+    rawConsole.error(...args);
+    const text = formatLogArgs(args);
+    sendTelegram(`❌ ${text}`).catch(() => {});
+  };
+}
+
+function startTelegramHeartbeat() {
+  if (!TELEGRAM_LOGS_ENABLED) return;
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
+  if (telegramHeartbeat) clearInterval(telegramHeartbeat);
+
+  const intervalMs = Math.max(1, TELEGRAM_HEARTBEAT_MINUTES) * 60 * 1000;
+
+  telegramHeartbeat = setInterval(() => {
+    sendTelegram(
+      [
+        "💓 BOT HEARTBEAT",
+        `SYMBOL: ${SYMBOL}`,
+        `MODE: ${TRADE_MODE}`,
+        `privateReady: ${privateReady}`,
+        `tradeReady: ${tradeReady}`,
+        `uptimeSec: ${Math.floor(process.uptime())}`,
+        `latestPositionUpdatedAt: ${latestPositionUpdatedAt || 0}`,
+      ].join("\n"),
+      { disableNotification: true }
+    ).catch(() => {});
+  }, intervalMs);
+}
+
+// ================= HELPERS =================
 function hmacSha256(text) {
   return crypto.createHmac("sha256", API_SECRET).update(text).digest("hex");
 }
@@ -418,7 +557,10 @@ function connectPrivateWS() {
 
       if (msg.op === "pong") return;
 
-      if (msg.op === "subscribe" && (msg.success === true || msg.retCode === 0 || msg.ret_msg === "subscribe")) {
+      if (
+        msg.op === "subscribe" &&
+        (msg.success === true || msg.retCode === 0 || msg.ret_msg === "subscribe")
+      ) {
         console.log("📡 PRIVATE WS SUBSCRIBED");
         return;
       }
@@ -565,22 +707,52 @@ async function startWatchdog() {
 }
 
 // ================= GLOBAL CRASH PROTECTION =================
-process.on("unhandledRejection", (err) => {
+process.on("unhandledRejection", async (err) => {
   console.error("🔥 UNHANDLED REJECTION:", err?.message || err);
+  await sendTelegram(`🔥 UNHANDLED REJECTION\n${err?.message || String(err)}`);
 });
 
-process.on("uncaughtException", (err) => {
+process.on("uncaughtException", async (err) => {
   console.error("🔥 UNCAUGHT EXCEPTION:", err?.message || err);
+  await sendTelegram(`🔥 UNCAUGHT EXCEPTION\n${err?.message || String(err)}`);
+});
+
+process.on("SIGTERM", async () => {
+  console.log("🛑 SIGTERM received");
+  running = false;
+  await sendTelegram("🛑 Render sent SIGTERM. Bot stopping.");
+  process.exit(0);
+});
+
+process.on("SIGINT", async () => {
+  console.log("🛑 SIGINT received");
+  running = false;
+  await sendTelegram("🛑 Process interrupted. Bot stopping.");
+  process.exit(0);
 });
 
 // ================= START =================
 async function startBot() {
+  installTelegramConsoleMirror();
+
   console.log("🤖 BOT STARTED...");
   console.log(`📌 SYMBOL: ${SYMBOL}`);
   console.log(`🌐 TRADE_MODE: ${TRADE_MODE}`);
   console.log(`🌍 HTTP: ${HTTP_BASE_URL}`);
   console.log(`🔌 PRIVATE WS: ${PRIVATE_WS_URL}`);
 
+  await sendTelegram(
+    [
+      "✅ BOT STARTED ON RENDER",
+      `SYMBOL: ${SYMBOL}`,
+      `MODE: ${TRADE_MODE}`,
+      `HTTP: ${HTTP_BASE_URL}`,
+      `PRIVATE_WS: ${PRIVATE_WS_URL}`,
+      `TELEGRAM_LOGS_ENABLED: ${TELEGRAM_LOGS_ENABLED}`,
+    ].join("\n")
+  );
+
+  startTelegramHeartbeat();
   connectPrivateWS();
 
   if (TRADE_MODE !== "demo") {
