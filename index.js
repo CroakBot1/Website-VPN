@@ -11,7 +11,7 @@ const API_SECRET = process.env.API_SECRET;
 const SYMBOL = process.env.SYMBOL || "BTCUSDT";
 const MAX_LOSS = Number(process.env.MAX_LOSS ?? -40); // USDT loss limit
 const TAKE_PROFIT = Number(process.env.TAKE_PROFIT ?? 45); // ✅ ADDED ONLY
-const INTERVAL = Number(process.env.INTERVAL ?? 4000); // 4 seconds
+const INTERVAL = Number(process.env.INTERVAL ?? 2000); // 2 seconds
 
 const BASE_URL = "https://api.bybit.com";
 const RECV_WINDOW = "5000";
