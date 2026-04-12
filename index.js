@@ -20,23 +20,17 @@ let currentInterval = SLOW_INTERVAL;
 const RECV_WINDOW = "5000";
 
 /**
- * ENVIRONMENT MODES:
- * - mainnet  = actual live account
- * - demo     = Bybit demo trading
- * - testnet  = Bybit testnet
+ * TRADE_MODE:
+ * - mainnet = actual live account
+ * - demo    = bybit demo trading
+ * - testnet = bybit testnet
  */
 const TRADE_MODE = String(process.env.TRADE_MODE || "mainnet").toLowerCase();
 
-/**
- * IMPORTANT:
- * - Mainnet actual account -> official mainnet ws/http
- * - Testnet -> official testnet ws/http
- * - Demo trading -> uses api-demo.bybit.com for REST demo service
- *
- * For demo websocket trade/order-entry:
- * current public info is not as clear/reliable as mainnet/testnet,
- * so this bot auto-fallbacks to REST close for demo mode.
- */
+const FORCE_REST_CLOSE_ON_DEMO =
+  String(process.env.FORCE_REST_CLOSE_ON_DEMO ?? "true").toLowerCase() === "true";
+
+// ================= ENV URLS =================
 const HTTP_BASE_URL =
   TRADE_MODE === "testnet"
     ? "https://api-testnet.bybit.com"
@@ -54,16 +48,18 @@ const PRIVATE_WS_URL =
 const TRADE_WS_URL =
   TRADE_MODE === "testnet"
     ? "wss://stream-testnet.bybit.com/v5/trade"
-    : TRADE_MODE === "demo"
-    ? "wss://stream-demo.bybit.com/v5/trade"
     : "wss://stream.bybit.com/v5/trade";
+// NOTE:
+// Demo trade websocket is intentionally NOT used because it returns 404 in practice.
+// So for demo, we disable trade WS and use REST fallback for closePosition().
 
-// demo mode safety: use REST fallback for order close if trade ws is unavailable
-const FORCE_REST_CLOSE_ON_DEMO =
-  String(process.env.FORCE_REST_CLOSE_ON_DEMO ?? "true").toLowerCase() === "true";
-
+// ================= VALIDATION =================
 if (!API_KEY || !API_SECRET) {
   throw new Error("Missing API_KEY or API_SECRET in .env");
+}
+
+if (!["mainnet", "demo", "testnet"].includes(TRADE_MODE)) {
+  throw new Error("TRADE_MODE must be one of: mainnet, demo, testnet");
 }
 
 // ================= STATE =================
@@ -102,10 +98,11 @@ function safeJsonParse(raw) {
   }
 }
 
-function startHeartbeat(ws) {
+function startHeartbeat(ws, label) {
   return setInterval(() => {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ op: "ping" }));
+      // console.log(`💓 ${label} ping`);
     }
   }, 20_000);
 }
@@ -126,7 +123,7 @@ function signRestGet(params) {
 }
 
 /**
- * Bybit V5 POST signature:
+ * Bybit V5 POST signing
  * sign = HMAC_SHA256(timestamp + api_key + recv_window + jsonBodyString)
  */
 function signRestPost(timestamp, bodyString) {
@@ -209,7 +206,7 @@ async function closePositionViaRest(side, size) {
 
 // ================= GET POSITION =================
 async function getPosition() {
-  // primary source = websocket cache
+  // primary = websocket cache
   if (latestPosition) return latestPosition;
 
   // fallback = REST
@@ -226,7 +223,7 @@ async function closePosition(side, size) {
   isClosing = true;
 
   try {
-    // DEMO: safest behavior is REST fallback by default
+    // DEMO MODE: always use REST close by default
     if (TRADE_MODE === "demo" && FORCE_REST_CLOSE_ON_DEMO) {
       console.log("🧪 DEMO MODE: using REST fallback close...");
       await closePositionViaRest(side, size);
@@ -257,13 +254,8 @@ async function closePosition(side, size) {
       tradeWs.send(JSON.stringify(payload));
       console.log("✅ CLOSE REQUEST SENT VIA WS");
     } else {
-      if (TRADE_MODE === "demo") {
-        console.log("⚠️ Demo trade WS not ready, using REST fallback...");
-        await closePositionViaRest(side, size);
-      } else {
-        console.log("📥 Trade WS not ready yet, queueing close request...");
-        pendingTradeRequests.push(payload);
-      }
+      console.log("⚠️ TRADE WS not ready, fallback to REST close...");
+      await closePositionViaRest(side, size);
     }
   } catch (err) {
     console.error("CLOSE POSITION ERROR:", err.message);
@@ -359,13 +351,13 @@ function connectPrivateWS() {
         privateReady = true;
 
         if (privateHeartbeat) clearInterval(privateHeartbeat);
-        privateHeartbeat = startHeartbeat(privateWs);
+        privateHeartbeat = startHeartbeat(privateWs, "PRIVATE");
         return;
       }
 
       if (msg.op === "pong") return;
 
-      if (msg.op === "subscribe" && (msg.success === true || msg.ret_msg === "subscribe")) {
+      if (msg.op === "subscribe" && (msg.success === true || msg.retCode === 0 || msg.ret_msg === "subscribe")) {
         console.log("📡 PRIVATE WS SUBSCRIBED");
         return;
       }
@@ -378,25 +370,34 @@ function connectPrivateWS() {
           latestPositionUpdatedAt = Date.now();
           await runMonitorSafely("position-stream");
         }
+
         return;
       }
 
       if (msg.topic === "order" && Array.isArray(msg.data)) {
         for (const order of msg.data) {
           if (order.symbol !== SYMBOL) continue;
+
           console.log(
             `🧾 ORDER UPDATE: ${order.orderStatus || "UNKNOWN"} | ${order.side} | qty=${order.qty}`
           );
         }
+
+        return;
       }
     });
 
     privateWs.on("close", async () => {
       privateReady = false;
-      if (privateHeartbeat) clearInterval(privateHeartbeat);
+
+      if (privateHeartbeat) {
+        clearInterval(privateHeartbeat);
+        privateHeartbeat = null;
+      }
 
       const wait = Math.min(30000, 2000 * Math.pow(2, retry));
       console.log(`⚠️ PRIVATE WS CLOSED → reconnect in ${wait}ms`);
+
       await sleep(wait);
       retry++;
       openConnection();
@@ -412,7 +413,6 @@ function connectPrivateWS() {
 
 // ================= TRADE WS =================
 function connectTradeWS() {
-  // in demo mode, allowed but optional. if it fails, REST fallback handles close.
   let retry = 0;
 
   const openConnection = () => {
@@ -437,12 +437,12 @@ function connectTradeWS() {
       const msg = safeJsonParse(raw);
       if (!msg) return;
 
-      if (msg.op === "auth" && msg.retCode === 0) {
+      if (msg.op === "auth" && (msg.success === true || msg.retCode === 0)) {
         console.log("🔐 TRADE WS AUTH OK");
         tradeReady = true;
 
         if (tradeHeartbeat) clearInterval(tradeHeartbeat);
-        tradeHeartbeat = startHeartbeat(tradeWs);
+        tradeHeartbeat = startHeartbeat(tradeWs, "TRADE");
 
         flushPendingTradeRequests();
         return;
@@ -461,7 +461,11 @@ function connectTradeWS() {
 
     tradeWs.on("close", async () => {
       tradeReady = false;
-      if (tradeHeartbeat) clearInterval(tradeHeartbeat);
+
+      if (tradeHeartbeat) {
+        clearInterval(tradeHeartbeat);
+        tradeHeartbeat = null;
+      }
 
       const wait = Math.min(30000, 2000 * Math.pow(2, retry));
       console.log(`⚠️ TRADE WS CLOSED → reconnect in ${wait}ms`);
@@ -498,7 +502,7 @@ async function startWatchdog() {
   }
 }
 
-// ================= CRASH PROTECTION =================
+// ================= GLOBAL CRASH PROTECTION =================
 process.on("unhandledRejection", (err) => {
   console.error("🔥 UNHANDLED REJECTION:", err?.message || err);
 });
@@ -509,15 +513,21 @@ process.on("uncaughtException", (err) => {
 
 // ================= START =================
 async function startBot() {
-  console.log("🤖 FULLY WEBSOCKET BOT STARTED...");
+  console.log("🤖 BOT STARTED...");
   console.log(`📌 SYMBOL: ${SYMBOL}`);
   console.log(`🌐 TRADE_MODE: ${TRADE_MODE}`);
   console.log(`🌍 HTTP: ${HTTP_BASE_URL}`);
   console.log(`🔌 PRIVATE WS: ${PRIVATE_WS_URL}`);
-  console.log(`🔌 TRADE WS: ${TRADE_WS_URL}`);
 
   connectPrivateWS();
-  connectTradeWS();
+
+  if (TRADE_MODE !== "demo") {
+    console.log(`🔌 TRADE WS: ${TRADE_WS_URL}`);
+    connectTradeWS();
+  } else {
+    console.log("🧪 DEMO MODE: TRADE WS disabled, REST fallback enabled.");
+  }
+
   startWatchdog();
 }
 
