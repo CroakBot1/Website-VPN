@@ -1,5 +1,2 @@
-node_modules
+node_modules/
 .env
-git add package.json
-git commit -m "add start script"
-git push
