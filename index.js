@@ -23,10 +23,7 @@ function sign(params) {
     .map((key) => `${key}=${params[key]}`)
     .join("&");
 
-  return crypto
-    .createHmac("sha256", API_SECRET)
-    .update(query)
-    .digest("hex");
+  return crypto.createHmac("sha256", API_SECRET).update(query).digest("hex");
 }
 
 // ================= GET POSITION =================
@@ -54,7 +51,7 @@ async function getPosition() {
     return list[0];
   } catch (err) {
     console.error("GET POSITION ERROR:", err.response?.data || err.message);
-    throw err; // 🔥 important for retry
+    throw err;
   }
 }
 
@@ -85,11 +82,11 @@ async function closePosition(side, size) {
     console.log("✅ POSITION CLOSED:", res.data);
   } catch (err) {
     console.error("CLOSE POSITION ERROR:", err.response?.data || err.message);
-    throw err; // 🔥 important for retry
+    throw err;
   }
 }
 
-// ================= MONITOR =================
+// ================= MONITOR (UNCHANGED LOGIC) =================
 async function monitor() {
   const pos = await getPosition();
 
@@ -117,48 +114,76 @@ async function monitor() {
   }
 }
 
-// ================= SAFE LOOP =================
-let isRunning = false;
+// ================= TRUE AUTO RECONNECT ENGINE =================
+
+let running = true;
+let isExecuting = false;
 
 function sleep(ms) {
-  return new Promise((res) => setTimeout(res, ms));
+  return new Promise((r) => setTimeout(r, ms));
 }
 
-async function safeRun() {
-  if (isRunning) return; // 🔥 prevent overlap
-  isRunning = true;
+// global crash protection (IMPORTANT)
+process.on("unhandledRejection", (err) => {
+  console.error("🔥 UNHANDLED REJECTION:", err.message);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("🔥 UNCAUGHT EXCEPTION:", err.message);
+});
+
+// ================= MAIN DAEMON LOOP =================
+async function startBot() {
+  console.log("🤖 TRUE AUTO RECONNECT BOT STARTED...");
 
   let retry = 0;
 
-  while (true) {
+  while (running) {
     try {
-      await monitor();
-      retry = 0; // reset on success
-      break;
+      if (isExecuting) {
+        await sleep(200); // prevent overlap
+        continue;
+      }
+
+      isExecuting = true;
+
+      await monitor(); // 🔥 YOUR ORIGINAL LOGIC
+
+      isExecuting = false;
+
+      retry = 0;
+
+      await sleep(INTERVAL);
     } catch (err) {
+      isExecuting = false;
+
       const status = err.response?.status;
 
+      // ================= RATE LIMIT =================
       if (status === 429) {
-        const wait = 5000;
-        console.log(`⛔ RATE LIMIT. Wait ${wait}ms`);
-        await sleep(wait);
-      } else {
-        const wait = Math.min(30000, 2000 * Math.pow(2, retry));
-        console.log(`⚠️ ERROR. Retry in ${wait}ms`);
-        await sleep(wait);
-        retry++;
+        console.log("⛔ RATE LIMIT → cooling down 5s");
+        await sleep(5000);
+        continue;
+      }
+
+      // ================= NETWORK / API ERROR =================
+      const wait = Math.min(30000, 2000 * Math.pow(2, retry));
+
+      console.log(`⚠️ ERROR → auto-reconnect in ${wait}ms`, err.message);
+
+      await sleep(wait);
+
+      retry++;
+
+      // HARD RESET MODE (true reconnect behavior)
+      if (retry > 10) {
+        console.log("🔄 HARD RECONNECT RESET...");
+        retry = 0;
+        await sleep(5000);
       }
     }
   }
-
-  isRunning = false;
 }
 
-// ================= START BOT =================
-console.log("🤖 Bybit Bot Running...");
-
-setInterval(() => {
-  safeRun().catch((err) =>
-    console.error("FATAL ERROR:", err.message)
-  );
-}, INTERVAL);
+// ================= START =================
+startBot();
