@@ -9,9 +9,9 @@ const API_KEY = process.env.API_KEY;
 const API_SECRET = process.env.API_SECRET;
 
 const SYMBOL = process.env.SYMBOL || "BTCUSDT";
-const MAX_LOSS = Number(process.env.MAX_LOSS ?? -0.01); // USDT loss limit
-const TAKE_PROFIT = Number(process.env.TAKE_PROFIT ?? 45); // ✅ ADDED ONLY
-const INTERVAL = Number(process.env.INTERVAL ?? 2000); // 2 seconds
+const MAX_LOSS = Number(process.env.MAX_LOSS ?? -0.01);
+const TAKE_PROFIT = Number(process.env.TAKE_PROFIT ?? 45);
+const INTERVAL = Number(process.env.INTERVAL ?? 2000);
 
 const BASE_URL = "https://api.bybit.com";
 const RECV_WINDOW = "5000";
@@ -54,7 +54,7 @@ async function getPosition() {
     return list[0];
   } catch (err) {
     console.error("GET POSITION ERROR:", err.response?.data || err.message);
-    return null;
+    throw err; // 🔥 important for retry
   }
 }
 
@@ -85,6 +85,7 @@ async function closePosition(side, size) {
     console.log("✅ POSITION CLOSED:", res.data);
   } catch (err) {
     console.error("CLOSE POSITION ERROR:", err.response?.data || err.message);
+    throw err; // 🔥 important for retry
   }
 }
 
@@ -103,14 +104,12 @@ async function monitor() {
 
   console.log(`📊 ${SYMBOL} PnL (USDT): ${pnl}`);
 
-  // ================= MAX LOSS RULE (UNCHANGED) =================
   if (pnl <= MAX_LOSS) {
     console.log(`🚨 MAX LOSS HIT (${MAX_LOSS}). Closing position...`);
     await closePosition(side, size);
     return;
   }
 
-  // ================= TAKE PROFIT RULE (ADDED ONLY) =================
   if (pnl >= TAKE_PROFIT) {
     console.log(`🎯 TAKE PROFIT HIT (${TAKE_PROFIT}). Closing position...`);
     await closePosition(side, size);
@@ -118,11 +117,48 @@ async function monitor() {
   }
 }
 
+// ================= SAFE LOOP =================
+let isRunning = false;
+
+function sleep(ms) {
+  return new Promise((res) => setTimeout(res, ms));
+}
+
+async function safeRun() {
+  if (isRunning) return; // 🔥 prevent overlap
+  isRunning = true;
+
+  let retry = 0;
+
+  while (true) {
+    try {
+      await monitor();
+      retry = 0; // reset on success
+      break;
+    } catch (err) {
+      const status = err.response?.status;
+
+      if (status === 429) {
+        const wait = 5000;
+        console.log(`⛔ RATE LIMIT. Wait ${wait}ms`);
+        await sleep(wait);
+      } else {
+        const wait = Math.min(30000, 2000 * Math.pow(2, retry));
+        console.log(`⚠️ ERROR. Retry in ${wait}ms`);
+        await sleep(wait);
+        retry++;
+      }
+    }
+  }
+
+  isRunning = false;
+}
+
 // ================= START BOT =================
 console.log("🤖 Bybit Bot Running...");
 
 setInterval(() => {
-  monitor().catch((err) =>
-    console.error("MONITOR CRASH:", err.message)
+  safeRun().catch((err) =>
+    console.error("FATAL ERROR:", err.message)
   );
 }, INTERVAL);
