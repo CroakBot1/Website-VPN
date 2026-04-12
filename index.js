@@ -1,6 +1,7 @@
-import axios from "axios";
+import WebSocket from "ws";
 import crypto from "crypto";
 import dotenv from "dotenv";
+import axios from "axios";
 
 dotenv.config();
 
@@ -9,53 +10,18 @@ const API_KEY = process.env.API_KEY;
 const API_SECRET = process.env.API_SECRET;
 
 const SYMBOL = process.env.SYMBOL || "BTCUSDT";
-const MAX_LOSS = Number(process.env.MAX_LOSS ?? -40;
+const MAX_LOSS = Number(process.env.MAX_LOSS ?? -0.01);
 const TAKE_PROFIT = Number(process.env.TAKE_PROFIT ?? 45);
-const INTERVAL = Number(process.env.INTERVAL ?? 2000);
 
+const WS_URL = "wss://stream.bybit.com/v5/private";
 const BASE_URL = "https://api.bybit.com";
-const RECV_WINDOW = "5000";
 
-// ================= SIGN FUNCTION =================
-function sign(params) {
-  const query = Object.keys(params)
-    .sort()
-    .map((key) => `${key}=${params[key]}`)
-    .join("&");
-
+// ================= SIGN =================
+function sign(timestamp) {
   return crypto
     .createHmac("sha256", API_SECRET)
-    .update(query)
+    .update(timestamp + API_KEY + "5000")
     .digest("hex");
-}
-
-// ================= GET POSITION =================
-async function getPosition() {
-  try {
-    const timestamp = Date.now().toString();
-
-    const params = {
-      api_key: API_KEY,
-      timestamp,
-      recv_window: RECV_WINDOW,
-      category: "linear",
-      symbol: SYMBOL,
-    };
-
-    const signature = sign(params);
-
-    const res = await axios.get(`${BASE_URL}/v5/position/list`, {
-      params: { ...params, sign: signature },
-    });
-
-    const list = res?.data?.result?.list;
-    if (!list || list.length === 0) return null;
-
-    return list[0];
-  } catch (err) {
-    console.error("GET POSITION ERROR:", err.response?.data || err.message);
-    throw err; // 🔥 important for retry
-  }
 }
 
 // ================= CLOSE POSITION =================
@@ -66,7 +32,7 @@ async function closePosition(side, size) {
     const params = {
       api_key: API_KEY,
       timestamp,
-      recv_window: RECV_WINDOW,
+      recv_window: "5000",
       category: "linear",
       symbol: SYMBOL,
       side: side === "Buy" ? "Sell" : "Buy",
@@ -75,7 +41,15 @@ async function closePosition(side, size) {
       timeInForce: "IOC",
     };
 
-    const signature = sign(params);
+    const query = Object.keys(params)
+      .sort()
+      .map((k) => `${k}=${params[k]}`)
+      .join("&");
+
+    const signature = crypto
+      .createHmac("sha256", API_SECRET)
+      .update(query)
+      .digest("hex");
 
     const res = await axios.post(`${BASE_URL}/v5/order/create`, {
       ...params,
@@ -84,81 +58,90 @@ async function closePosition(side, size) {
 
     console.log("✅ POSITION CLOSED:", res.data);
   } catch (err) {
-    console.error("CLOSE POSITION ERROR:", err.response?.data || err.message);
-    throw err; // 🔥 important for retry
+    console.error("❌ CLOSE ERROR:", err.response?.data || err.message);
   }
 }
 
-// ================= MONITOR =================
-async function monitor() {
-  const pos = await getPosition();
+// ================= WS CONNECT =================
+let ws;
 
-  if (!pos || Number(pos.size) <= 0) {
-    console.log("📭 No open position");
-    return;
-  }
+function connectWS() {
+  ws = new WebSocket(WS_URL);
 
-  const pnl = Number(pos.unrealisedPnl || 0);
-  const size = pos.size;
-  const side = pos.side;
+  ws.on("open", () => {
+    console.log("🔌 WS Connected");
 
-  console.log(`📊 ${SYMBOL} PnL (USDT): ${pnl}`);
+    const timestamp = Date.now().toString();
+    const signature = sign(timestamp);
 
-  if (pnl <= MAX_LOSS) {
-    console.log(`🚨 MAX LOSS HIT (${MAX_LOSS}). Closing position...`);
-    await closePosition(side, size);
-    return;
-  }
+    // AUTH
+    ws.send(
+      JSON.stringify({
+        op: "auth",
+        args: [API_KEY, timestamp, signature],
+      })
+    );
+  });
 
-  if (pnl >= TAKE_PROFIT) {
-    console.log(`🎯 TAKE PROFIT HIT (${TAKE_PROFIT}). Closing position...`);
-    await closePosition(side, size);
-    return;
-  }
-}
+  ws.on("message", async (data) => {
+    const msg = JSON.parse(data);
 
-// ================= SAFE LOOP =================
-let isRunning = false;
+    // SUCCESS AUTH
+    if (msg.op === "auth" && msg.success) {
+      console.log("🔐 Authenticated");
 
-function sleep(ms) {
-  return new Promise((res) => setTimeout(res, ms));
-}
+      // SUBSCRIBE POSITION
+      ws.send(
+        JSON.stringify({
+          op: "subscribe",
+          args: ["position"],
+        })
+      );
+    }
 
-async function safeRun() {
-  if (isRunning) return; // 🔥 prevent overlap
-  isRunning = true;
+    // POSITION UPDATE
+    if (msg.topic === "position") {
+      const list = msg.data;
 
-  let retry = 0;
+      if (!list || list.length === 0) return;
 
-  while (true) {
-    try {
-      await monitor();
-      retry = 0; // reset on success
-      break;
-    } catch (err) {
-      const status = err.response?.status;
+      const pos = list.find((p) => p.symbol === SYMBOL);
+      if (!pos) return;
 
-      if (status === 429) {
-        const wait = 5000;
-        console.log(`⛔ RATE LIMIT. Wait ${wait}ms`);
-        await sleep(wait);
-      } else {
-        const wait = Math.min(30000, 2000 * Math.pow(2, retry));
-        console.log(`⚠️ ERROR. Retry in ${wait}ms`);
-        await sleep(wait);
-        retry++;
+      const size = Number(pos.size);
+      if (size <= 0) {
+        console.log("📭 No open position");
+        return;
+      }
+
+      const pnl = Number(pos.unrealisedPnl || 0);
+      const side = pos.side;
+
+      console.log(`📊 ${SYMBOL} PnL: ${pnl}`);
+
+      if (pnl <= MAX_LOSS) {
+        console.log(`🚨 MAX LOSS HIT (${MAX_LOSS})`);
+        await closePosition(side, size);
+      }
+
+      if (pnl >= TAKE_PROFIT) {
+        console.log(`🎯 TAKE PROFIT HIT (${TAKE_PROFIT})`);
+        await closePosition(side, size);
       }
     }
-  }
+  });
 
-  isRunning = false;
+  ws.on("close", () => {
+    console.log("🔌 WS Disconnected. Reconnecting...");
+    setTimeout(connectWS, 3000);
+  });
+
+  ws.on("error", (err) => {
+    console.error("⚠️ WS Error:", err.message);
+    ws.close();
+  });
 }
 
-// ================= START BOT =================
-console.log("🤖 Bybit Bot Running...");
-
-setInterval(() => {
-  safeRun().catch((err) =>
-    console.error("FATAL ERROR:", err.message)
-  );
-}, INTERVAL);
+// ================= START =================
+console.log("🤖 WS Bot Running...");
+connectWS();
