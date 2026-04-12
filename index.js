@@ -18,6 +18,9 @@ const SLOW_INTERVAL = 10000;
 let currentInterval = SLOW_INTERVAL;
 
 const RECV_WINDOW = "5000";
+const POSITION_CACHE_TTL = 3000;
+const CLOSE_VERIFY_RETRIES = 10;
+const CLOSE_VERIFY_DELAY = 1000;
 
 /**
  * TRADE_MODE:
@@ -197,6 +200,10 @@ async function closePositionViaRest(side, size) {
       },
     });
 
+    if (res?.data?.retCode !== 0) {
+      throw new Error(`REST close failed: ${res?.data?.retMsg || "unknown error"}`);
+    }
+
     console.log("✅ POSITION CLOSE SENT VIA REST:", res.data);
   } catch (err) {
     console.error("CLOSE POSITION REST ERROR:", err.response?.data || err.message);
@@ -204,13 +211,61 @@ async function closePositionViaRest(side, size) {
   }
 }
 
+// ================= POSITION CACHE =================
+function setLatestPosition(pos) {
+  latestPosition = pos || null;
+  latestPositionUpdatedAt = Date.now();
+}
+
+function clearLatestPosition() {
+  latestPosition = null;
+  latestPositionUpdatedAt = 0;
+}
+
 // ================= GET POSITION =================
 async function getPosition() {
-  // primary = websocket cache
-  if (latestPosition) return latestPosition;
+  const isFresh =
+    latestPosition && Date.now() - latestPositionUpdatedAt < POSITION_CACHE_TTL;
 
-  // fallback = REST
-  return await getPositionViaRest();
+  // primary = websocket cache, but only if fresh
+  if (isFresh) return latestPosition;
+
+  // fallback = REST refresh
+  const restPos = await getPositionViaRest();
+
+  if (!restPos || Number(restPos.size) <= 0 || !restPos.side) {
+    clearLatestPosition();
+    return null;
+  }
+
+  setLatestPosition(restPos);
+  return restPos;
+}
+
+// ================= CLOSE VERIFICATION =================
+async function verifyPositionClosed(retries = CLOSE_VERIFY_RETRIES) {
+  for (let i = 0; i < retries; i++) {
+    await sleep(CLOSE_VERIFY_DELAY);
+
+    const pos = await getPositionViaRest();
+
+    if (!pos || Number(pos.size) <= 0 || !pos.side) {
+      clearLatestPosition();
+      currentInterval = SLOW_INTERVAL;
+      console.log("✅ Position confirmed closed");
+      return true;
+    }
+
+    setLatestPosition(pos);
+    console.log(
+      `⏳ Close verification attempt ${i + 1}/${retries}: position still open | size=${pos.size} | pnl=${Number(
+        pos.unrealisedPnl || 0
+      )}`
+    );
+  }
+
+  console.error("❌ Close sent but position still open after verification");
+  return false;
 }
 
 // ================= CLOSE POSITION =================
@@ -223,10 +278,14 @@ async function closePosition(side, size) {
   isClosing = true;
 
   try {
+    // prevent stale cache from being trusted during close flow
+    clearLatestPosition();
+
     // DEMO MODE: always use REST close by default
     if (TRADE_MODE === "demo" && FORCE_REST_CLOSE_ON_DEMO) {
       console.log("🧪 DEMO MODE: using REST fallback close...");
       await closePositionViaRest(side, size);
+      await verifyPositionClosed();
       return;
     }
 
@@ -253,9 +312,11 @@ async function closePosition(side, size) {
     if (tradeReady && tradeWs?.readyState === WebSocket.OPEN) {
       tradeWs.send(JSON.stringify(payload));
       console.log("✅ CLOSE REQUEST SENT VIA WS");
+      await verifyPositionClosed();
     } else {
       console.log("⚠️ TRADE WS not ready, fallback to REST close...");
       await closePositionViaRest(side, size);
+      await verifyPositionClosed();
     }
   } catch (err) {
     console.error("CLOSE POSITION ERROR:", err.message);
@@ -365,12 +426,13 @@ function connectPrivateWS() {
       if (msg.topic === "position" && Array.isArray(msg.data)) {
         const pos = getActiveSymbolPosition(msg.data);
 
-        if (pos) {
-          latestPosition = pos;
-          latestPositionUpdatedAt = Date.now();
-          await runMonitorSafely("position-stream");
+        if (!pos || Number(pos.size) <= 0 || !pos.side) {
+          clearLatestPosition();
+        } else {
+          setLatestPosition(pos);
         }
 
+        await runMonitorSafely("position-stream");
         return;
       }
 
