@@ -10,7 +10,7 @@ const API_KEY = process.env.API_KEY;
 const API_SECRET = process.env.API_SECRET;
 
 const SYMBOL = process.env.SYMBOL || "BTCUSDT";
-const MAX_LOSS = Number(process.env.MAX_LOSS ?? -0.01);
+const MAX_LOSS = Number(process.env.MAX_LOSS ?? -0.005);
 const TAKE_PROFIT = Number(process.env.TAKE_PROFIT ?? 45);
 
 const WS_URL = "wss://stream.bybit.com/v5/private";
@@ -19,7 +19,7 @@ const BASE_URL = "https://api.bybit.com";
 // ================= STATE =================
 let ws;
 let isClosing = false;
-let lastTrigger = 0; // anti spam trigger
+let lastTrigger = 0;
 
 // ================= WS SIGN =================
 function wsSign(timestamp) {
@@ -29,7 +29,7 @@ function wsSign(timestamp) {
     .digest("hex");
 }
 
-// ================= REST SIGN (CORRECT BYBIT V5) =================
+// ================= REST SIGN (FIXED BYBIT V5) =================
 function restSign(timestamp, body) {
   return crypto
     .createHmac("sha256", API_SECRET)
@@ -37,10 +37,9 @@ function restSign(timestamp, body) {
     .digest("hex");
 }
 
-// ================= CLOSE POSITION (REST) =================
+// ================= CLOSE POSITION =================
 async function closePosition(side, size) {
   if (isClosing) return;
-
   isClosing = true;
 
   try {
@@ -56,17 +55,17 @@ async function closePosition(side, size) {
     };
 
     const body = JSON.stringify(params);
-    const sign = restSign(timestamp, body);
+    const signature = restSign(timestamp, body);
 
     const res = await axios.post(
       `${BASE_URL}/v5/order/create`,
-      params,
+      body,
       {
         headers: {
           "X-BAPI-API-KEY": API_KEY,
           "X-BAPI-TIMESTAMP": timestamp,
           "X-BAPI-RECV-WINDOW": "5000",
-          "X-BAPI-SIGN": sign,
+          "X-BAPI-SIGN": signature,
           "Content-Type": "application/json"
         }
       }
@@ -115,7 +114,11 @@ function connectWS() {
 
     // ================= POSITION UPDATE =================
     if (msg.topic === "position") {
-      const list = msg.data?.list || msg.data;
+      const list =
+        msg.data?.list ||
+        msg.data?.position ||
+        msg.data;
+
       if (!list) return;
 
       const pos = list.find((p) => p.symbol === SYMBOL);
@@ -124,12 +127,21 @@ function connectWS() {
       const size = Number(pos.size);
       if (size <= 0) return;
 
-      const pnl = Number(pos.unrealisedPnl ?? pos.unrealisedPnlE6 ?? 0);
+      const pnl = Number(
+        pos.unrealisedPnl ??
+        pos.unrealisedPnlE6 ??
+        pos.pnl ??
+        0
+      );
+
       const side = pos.side;
 
       console.log(`📊 ${SYMBOL} PnL: ${pnl}`);
 
-      // ================= ANTI SPAM (IMPORTANT FIX) =================
+      // ================= SAFETY DEBUG =================
+      // console.log("DEBUG POS:", JSON.stringify(pos, null, 2));
+
+      // ================= ANTI-SPAM =================
       const now = Date.now();
       if (now - lastTrigger < 5000) return;
 
@@ -160,5 +172,5 @@ function connectWS() {
 }
 
 // ================= START =================
-console.log("🤖 WS + REST Hybrid Bot Running...");
+console.log("🤖 FIXED WS + REST BYBIT BOT RUNNING...");
 connectWS();
