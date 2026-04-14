@@ -742,6 +742,13 @@ async function startBot() {
   console.log(`🌍 HTTP: ${HTTP_BASE_URL}`);
   console.log(`🔌 PRIVATE WS: ${PRIVATE_WS_URL}`);
 
+  // ✅ ADD THIS HERE (IMPORTANT FIX)
+  initTelegramAutoDeleteLite({
+    botToken: TELEGRAM_BOT_TOKEN,
+    chatId: TELEGRAM_CHAT_ID,
+    intervalMs: 10000,
+  });
+
   await sendTelegram(
     [
       "✅ BOT STARTED ON RENDER",
@@ -765,11 +772,5 @@ async function startBot() {
 
   startWatchdog();
 }
-
-initTelegramAutoDeleteLite({
-  botToken: TELEGRAM_BOT_TOKEN,
-  chatId: TELEGRAM_CHAT_ID,
-  intervalMs: 10000,
-});
 
 startBot();
