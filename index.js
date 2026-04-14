@@ -772,5 +772,3 @@ async function startBot() {
 
   startWatchdog();
 }
-
-startBot();
