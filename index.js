@@ -766,3 +766,31 @@ async function startBot() {
 }
 
 startBot();
+
+import { spawn } from "child_process";
+
+// ================= TERMUX PYTHON WORKER =================
+function startTermuxWorker() {
+  console.log("🧠 Starting Termux Python Worker...");
+
+  const worker = spawn("python", ["./termux/worker.py"], {
+    stdio: "inherit",
+    env: process.env
+  });
+
+  worker.on("close", (code) => {
+    console.error(`⚠️ Termux Worker stopped with code ${code}`);
+    console.log("♻️ Restarting worker in 5s...");
+
+    setTimeout(() => {
+      startTermuxWorker();
+    }, 5000);
+  });
+
+  worker.on("error", (err) => {
+    console.error("❌ Worker error:", err.message);
+  });
+}
+
+// START WORKER ALONGSIDE BOT
+startTermuxWorker();
