@@ -1,3 +1,4 @@
+import { initTelegramAutoDeleteLite } from "./telegramAutoDelete.js";
 import axios from "axios";
 import crypto from "crypto";
 import dotenv from "dotenv";
