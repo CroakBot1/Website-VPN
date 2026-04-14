@@ -44,7 +44,7 @@ const TELEGRAM_SILENT =
 
 let telegramHeartbeat = null;
 let lastTelegramMessageAt = 0;
-const TELEGRAM_MIN_GAP_MS = 1200;
+const TELEGRAM_MIN_GAP_MS = 10000;
 const telegramQueue = [];
 let telegramSending = false;
 
