@@ -767,3 +767,12 @@ async function startBot() {
 }
 
 startBot();
+
+
+import { initTelegramAutoDeleteLite } from "./telegramAutoDelete.js";
+
+initTelegramAutoDeleteLite({
+  botToken: TELEGRAM_BOT_TOKEN,
+  chatId: TELEGRAM_CHAT_ID,
+  intervalMs: 10000,
+});
