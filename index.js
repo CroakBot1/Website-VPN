@@ -766,4 +766,10 @@ async function startBot() {
   startWatchdog();
 }
 
+initTelegramAutoDeleteLite({
+  botToken: TELEGRAM_BOT_TOKEN,
+  chatId: TELEGRAM_CHAT_ID,
+  intervalMs: 10000,
+});
+
 startBot();
