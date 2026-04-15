@@ -10,8 +10,8 @@ const API_KEY = process.env.API_KEY;
 const API_SECRET = process.env.API_SECRET;
 
 const SYMBOL = process.env.SYMBOL || "BTCUSDT";
-const MAX_LOSS = Number(process.env.MAX_LOSS ?? -30);
-const TAKE_PROFIT = Number(process.env.TAKE_PROFIT ?? 45);
+const MAX_LOSS = Number(process.env.MAX_LOSS ?? -60);
+const TAKE_PROFIT = Number(process.env.TAKE_PROFIT ?? 90);
 
 const FAST_INTERVAL = 2000;
 const SLOW_INTERVAL = 10000;
