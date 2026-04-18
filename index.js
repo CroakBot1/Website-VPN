@@ -22,6 +22,10 @@ const POSITION_CACHE_TTL = 3000;
 const CLOSE_VERIFY_RETRIES = 10;
 const CLOSE_VERIFY_DELAY = 1000;
 
+// ================= TRANSFER CONFIG =================
+const TRANSFER_AMOUNT = Number(process.env.TRANSFER_AMOUNT ?? 50); // Default 50 USDT
+const TRANSFER_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes in milliseconds
+
 /**
  * TRADE_MODE:
  * - mainnet = actual live account
@@ -67,9 +71,6 @@ const TRADE_WS_URL =
   TRADE_MODE === "testnet"
     ? "wss://stream-testnet.bybit.com/v5/trade"
     : "wss://stream.bybit.com/v5/trade";
-// NOTE:
-// Demo trade websocket is intentionally NOT used because it returns 404 in practice.
-// So for demo, we disable trade WS and use REST fallback for closePosition().
 
 // ================= VALIDATION =================
 if (!API_KEY || !API_SECRET) {
@@ -244,7 +245,6 @@ function startHeartbeat(ws, label) {
   return setInterval(() => {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ op: "ping" }));
-      // console.log(`💓 ${label} ping`);
     }
   }, 20_000);
 }
@@ -264,10 +264,6 @@ function signRestGet(params) {
   return hmacSha256(query);
 }
 
-/**
- * Bybit V5 POST signing
- * sign = HMAC_SHA256(timestamp + api_key + recv_window + jsonBodyString)
- */
 function signRestPost(timestamp, bodyString) {
   return hmacSha256(`${timestamp}${API_KEY}${RECV_WINDOW}${bodyString}`);
 }
@@ -366,10 +362,8 @@ async function getPosition() {
   const isFresh =
     latestPosition && Date.now() - latestPositionUpdatedAt < POSITION_CACHE_TTL;
 
-  // primary = websocket cache, but only if fresh
   if (isFresh) return latestPosition;
 
-  // fallback = REST refresh
   const restPos = await getPositionViaRest();
 
   if (!restPos || Number(restPos.size) <= 0 || !restPos.side) {
@@ -417,10 +411,8 @@ async function closePosition(side, size) {
   isClosing = true;
 
   try {
-    // prevent stale cache from being trusted during close flow
     clearLatestPosition();
 
-    // DEMO MODE: always use REST close by default
     if (TRADE_MODE === "demo" && FORCE_REST_CLOSE_ON_DEMO) {
       console.log("🧪 DEMO MODE: using REST fallback close...");
       await closePositionViaRest(side, size);
@@ -467,7 +459,58 @@ async function closePosition(side, size) {
   }
 }
 
-// ================= MONITOR (LOGIC PRESERVED) =================
+// ================= AUTO TRANSFER (FUNDING TO UTA) =================
+async function transferFundingToUTA() {
+  if (TRADE_MODE !== "mainnet") {
+    console.log("🧪 Skipping Auto-Transfer (Demo/Testnet mode active)");
+    return;
+  }
+
+  try {
+    const timestamp = Date.now().toString();
+    const transferId = crypto.randomUUID(); 
+
+    const body = {
+      transferId: transferId,
+      coin: "USDT",
+      amount: String(TRANSFER_AMOUNT),
+      fromAccountType: "FUND",
+      toAccountType: "UNIFIED" // Unified Trading Account
+    };
+
+    const bodyString = JSON.stringify(body);
+    const sign = signRestPost(timestamp, bodyString);
+
+    const res = await axios.post(`${HTTP_BASE_URL}/v5/asset/transfer/inter-transfer`, body, {
+      headers: {
+        "Content-Type": "application/json",
+        "X-BAPI-API-KEY": API_KEY,
+        "X-BAPI-TIMESTAMP": timestamp,
+        "X-BAPI-RECV-WINDOW": RECV_WINDOW,
+        "X-BAPI-SIGN": sign,
+      },
+    });
+
+    if (res?.data?.retCode !== 0) {
+      console.warn(`⚠️ Transfer Failed: ${res?.data?.retMsg || "Insufficient balance or error"}`);
+    } else {
+      console.log(`💸 Success! Transferred ${TRANSFER_AMOUNT} USDT from FUNDING to UTA.`);
+    }
+  } catch (err) {
+    console.error("TRANSFER ERROR:", err.response?.data || err.message);
+  }
+}
+
+function startAutoTransfer() {
+  console.log(`⏱️ Auto-Transfer Active: Moving ${TRANSFER_AMOUNT} USDT every 5 minutes.`);
+  
+  // Set interval to run every 5 minutes (300,000 ms)
+  setInterval(() => {
+    transferFundingToUTA();
+  }, TRANSFER_INTERVAL_MS);
+}
+
+// ================= MONITOR =================
 async function monitor() {
   const pos = await getPosition();
 
@@ -761,6 +804,9 @@ async function startBot() {
   } else {
     console.log("🧪 DEMO MODE: TRADE WS disabled, REST fallback enabled.");
   }
+
+  // Start the auto-transfer loop
+  startAutoTransfer();
 
   startWatchdog();
 }
