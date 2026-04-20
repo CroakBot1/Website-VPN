@@ -26,6 +26,15 @@ const CLOSE_VERIFY_DELAY = 1000;
 const TRANSFER_AMOUNT = Number(process.env.TRANSFER_AMOUNT ?? 50); // Default 50 USDT
 const TRANSFER_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes in milliseconds
 
+// ================= NEW RESERVE CONFIG =================
+const UTA_RESERVE_BALANCE = Number(process.env.UTA_RESERVE_BALANCE ?? 501);
+const RESERVE_CHECK_INTERVAL_MS = Number(
+  process.env.RESERVE_CHECK_INTERVAL_MS ?? 60 * 1000
+);
+const RESERVE_TRANSFER_MIN_AMOUNT = Number(
+  process.env.RESERVE_TRANSFER_MIN_AMOUNT ?? 0.01
+);
+
 /**
  * TRADE_MODE:
  * - mainnet = actual live account
@@ -85,6 +94,7 @@ if (!["mainnet", "demo", "testnet"].includes(TRADE_MODE)) {
 let running = true;
 let isExecuting = false;
 let isClosing = false;
+let isReserveMaintaining = false;
 
 let privateWs = null;
 let tradeWs = null;
@@ -127,6 +137,11 @@ function chunkText(text, max = 3900) {
     chunks.push(text.slice(i, i + max));
   }
   return chunks;
+}
+
+function roundDown(value, decimals = 6) {
+  const factor = 10 ** decimals;
+  return Math.floor(Number(value) * factor) / factor;
 }
 
 async function sleep(ms) {
@@ -222,6 +237,7 @@ function startTelegramHeartbeat() {
         `tradeReady: ${tradeReady}`,
         `uptimeSec: ${Math.floor(process.uptime())}`,
         `latestPositionUpdatedAt: ${latestPositionUpdatedAt || 0}`,
+        `UTA_RESERVE_BALANCE: ${UTA_RESERVE_BALANCE}`,
       ].join("\n"),
       { disableNotification: true }
     ).catch(() => {});
@@ -266,6 +282,18 @@ function signRestGet(params) {
 
 function signRestPost(timestamp, bodyString) {
   return hmacSha256(`${timestamp}${API_KEY}${RECV_WINDOW}${bodyString}`);
+}
+
+// ===== NEW: V5 header-based GET signing (for wallet-balance) =====
+function buildSortedQueryString(params) {
+  return Object.keys(params)
+    .sort()
+    .map((key) => `${key}=${encodeURIComponent(params[key])}`)
+    .join("&");
+}
+
+function signV5Get(timestamp, queryString) {
+  return hmacSha256(`${timestamp}${API_KEY}${RECV_WINDOW}${queryString}`);
 }
 
 function getActiveSymbolPosition(list) {
@@ -346,33 +374,54 @@ async function closePositionViaRest(side, size) {
   }
 }
 
-// ================= POSITION CACHE =================
-function setLatestPosition(pos) {
-  latestPosition = pos || null;
-  latestPositionUpdatedAt = Date.now();
-}
-
-function clearLatestPosition() {
-  latestPosition = null;
-  latestPositionUpdatedAt = 0;
-}
-
-// ================= GET POSITION =================
-async function getPosition() {
-  const isFresh =
-    latestPosition && Date.now() - latestPositionUpdatedAt < POSITION_CACHE_TTL;
-
-  if (isFresh) return latestPosition;
-
-  const restPos = await getPositionViaRest();
-
-  if (!restPos || Number(restPos.size) <= 0 || !restPos.side) {
-    clearLatestPosition();
+// ================= NEW: UTA BALANCE CHECK =================
+async function getUTAUsdtWalletBalance() {
+  if (TRADE_MODE !== "mainnet") {
+    console.log("🧪 Skipping UTA reserve check balance fetch (Demo/Testnet mode active)");
     return null;
   }
 
-  setLatestPosition(restPos);
-  return restPos;
+  try {
+    const timestamp = Date.now().toString();
+
+    const params = {
+      accountType: "UNIFIED",
+      coin: "USDT",
+    };
+
+    const queryString = buildSortedQueryString(params);
+    const sign = signV5Get(timestamp, queryString);
+
+    const res = await axios.get(`${HTTP_BASE_URL}/v5/account/wallet-balance`, {
+      params,
+      headers: {
+        "X-BAPI-API-KEY": API_KEY,
+        "X-BAPI-TIMESTAMP": timestamp,
+        "X-BAPI-RECV-WINDOW": RECV_WINDOW,
+        "X-BAPI-SIGN": sign,
+      },
+      timeout: 15000,
+    });
+
+    if (res?.data?.retCode !== 0) {
+      throw new Error(res?.data?.retMsg || "Unknown wallet balance error");
+    }
+
+    const account = res?.data?.result?.list?.[0];
+    const usdtCoin = account?.coin?.find((c) => c.coin === "USDT");
+
+    if (!usdtCoin) {
+      console.log("ℹ️ No USDT coin entry found in UTA wallet-balance response");
+      return 0;
+    }
+
+    // We keep it simple and use walletBalance for reserve-maintenance target.
+    const walletBalance = Number(usdtCoin.walletBalance || 0);
+    return Number.isFinite(walletBalance) ? walletBalance : 0;
+  } catch (err) {
+    console.error("GET UTA USDT BALANCE ERROR:", err.response?.data || err.message);
+    return null;
+  }
 }
 
 // ================= CLOSE VERIFICATION =================
@@ -468,14 +517,14 @@ async function transferFundingToUTA() {
 
   try {
     const timestamp = Date.now().toString();
-    const transferId = crypto.randomUUID(); 
+    const transferId = crypto.randomUUID();
 
     const body = {
-      transferId: transferId,
+      transferId,
       coin: "USDT",
       amount: String(TRANSFER_AMOUNT),
       fromAccountType: "FUND",
-      toAccountType: "UNIFIED" // Unified Trading Account
+      toAccountType: "UNIFIED", // Unified Trading Account
     };
 
     const bodyString = JSON.stringify(body);
@@ -503,11 +552,124 @@ async function transferFundingToUTA() {
 
 function startAutoTransfer() {
   console.log(`⏱️ Auto-Transfer Active: Moving ${TRANSFER_AMOUNT} USDT every 5 minutes.`);
-  
-  // Set interval to run every 5 minutes (300,000 ms)
+
   setInterval(() => {
     transferFundingToUTA();
   }, TRANSFER_INTERVAL_MS);
+}
+
+// ================= NEW: UTA EXCESS -> FUNDING =================
+async function transferExcessUTAToFunding(amount) {
+  if (TRADE_MODE !== "mainnet") {
+    console.log("🧪 Skipping UTA excess transfer (Demo/Testnet mode active)");
+    return;
+  }
+
+  const normalizedAmount = roundDown(amount, 6);
+
+  if (!Number.isFinite(normalizedAmount) || normalizedAmount < RESERVE_TRANSFER_MIN_AMOUNT) {
+    console.log(
+      `ℹ️ UTA excess transfer skipped. Amount too small: ${normalizedAmount} USDT`
+    );
+    return;
+  }
+
+  try {
+    const timestamp = Date.now().toString();
+    const transferId = crypto.randomUUID();
+
+    const body = {
+      transferId,
+      coin: "USDT",
+      amount: String(normalizedAmount),
+      fromAccountType: "UNIFIED",
+      toAccountType: "FUND",
+    };
+
+    const bodyString = JSON.stringify(body);
+    const sign = signRestPost(timestamp, bodyString);
+
+    const res = await axios.post(`${HTTP_BASE_URL}/v5/asset/transfer/inter-transfer`, body, {
+      headers: {
+        "Content-Type": "application/json",
+        "X-BAPI-API-KEY": API_KEY,
+        "X-BAPI-TIMESTAMP": timestamp,
+        "X-BAPI-RECV-WINDOW": RECV_WINDOW,
+        "X-BAPI-SIGN": sign,
+      },
+      timeout: 15000,
+    });
+
+    if (res?.data?.retCode !== 0) {
+      console.warn(
+        `⚠️ UTA -> FUND transfer failed: ${res?.data?.retMsg || "unknown transfer error"}`
+      );
+      return;
+    }
+
+    console.log(
+      `💼 Reserve maintained: transferred ${normalizedAmount} USDT excess from UTA to Funding.`
+    );
+  } catch (err) {
+    console.error("UTA -> FUND TRANSFER ERROR:", err.response?.data || err.message);
+  }
+}
+
+async function maintainUTAReserveBalance() {
+  if (isReserveMaintaining) {
+    console.log("⏳ Reserve maintenance already running, skipping duplicate cycle...");
+    return;
+  }
+
+  isReserveMaintaining = true;
+
+  try {
+    if (TRADE_MODE !== "mainnet") {
+      console.log("🧪 Skipping reserve maintenance (Demo/Testnet mode active)");
+      return;
+    }
+
+    const utaUsdtBalance = await getUTAUsdtWalletBalance();
+
+    if (utaUsdtBalance === null) {
+      console.warn("⚠️ Unable to read UTA USDT balance. Reserve maintenance skipped.");
+      return;
+    }
+
+    console.log(
+      `🏦 UTA USDT walletBalance: ${utaUsdtBalance} | reserve target: ${UTA_RESERVE_BALANCE}`
+    );
+
+    const excess = roundDown(utaUsdtBalance - UTA_RESERVE_BALANCE, 6);
+
+    if (excess >= RESERVE_TRANSFER_MIN_AMOUNT) {
+      console.log(
+        `💡 UTA balance exceeds reserve by ${excess} USDT. Transferring excess to Funding...`
+      );
+      await transferExcessUTAToFunding(excess);
+    } else {
+      console.log("✅ UTA reserve OK. No excess transfer needed.");
+    }
+  } catch (err) {
+    console.error("MAINTAIN UTA RESERVE ERROR:", err.message);
+  } finally {
+    isReserveMaintaining = false;
+  }
+}
+
+function startUTAReserveMaintainer() {
+  console.log(
+    `🛡️ UTA reserve maintainer active: keeping ${UTA_RESERVE_BALANCE} USDT in UTA, checking every ${Math.floor(
+      RESERVE_CHECK_INTERVAL_MS / 1000
+    )} seconds.`
+  );
+
+  // initial run
+  maintainUTAReserveBalance().catch(() => {});
+
+  setInterval(() => {
+    maintainUTAReserveBalance().catch(() => {});
+  }, RESERVE_CHECK_INTERVAL_MS);
 }
 
 // ================= MONITOR =================
@@ -792,6 +954,7 @@ async function startBot() {
       `HTTP: ${HTTP_BASE_URL}`,
       `PRIVATE_WS: ${PRIVATE_WS_URL}`,
       `TELEGRAM_LOGS_ENABLED: ${TELEGRAM_LOGS_ENABLED}`,
+      `UTA_RESERVE_BALANCE: ${UTA_RESERVE_BALANCE}`,
     ].join("\n")
   );
 
@@ -805,8 +968,11 @@ async function startBot() {
     console.log("🧪 DEMO MODE: TRADE WS disabled, REST fallback enabled.");
   }
 
-  // Start the auto-transfer loop
+  // Original logic preserved
   startAutoTransfer();
+
+  // New logic added separately
+  startUTAReserveMaintainer();
 
   startWatchdog();
 }
