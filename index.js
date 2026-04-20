@@ -307,6 +307,41 @@ function flushPendingTradeRequests() {
   }
 }
 
+// ================= POSITION CACHE HELPERS =================
+// Additive fix only: these helpers are used by existing logic but were missing.
+function setLatestPosition(pos) {
+  latestPosition = pos;
+  latestPositionUpdatedAt = Date.now();
+}
+
+function clearLatestPosition() {
+  latestPosition = null;
+  latestPositionUpdatedAt = 0;
+}
+
+async function getPosition() {
+  const now = Date.now();
+
+  if (
+    latestPosition &&
+    now - latestPositionUpdatedAt <= POSITION_CACHE_TTL &&
+    Number(latestPosition.size || 0) > 0 &&
+    latestPosition.side
+  ) {
+    return latestPosition;
+  }
+
+  const pos = await getPositionViaRest();
+
+  if (!pos || Number(pos.size) <= 0 || !pos.side) {
+    clearLatestPosition();
+    return null;
+  }
+
+  setLatestPosition(pos);
+  return pos;
+}
+
 // ================= REST FALLBACKS =================
 async function getPositionViaRest() {
   try {
