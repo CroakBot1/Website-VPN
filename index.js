@@ -27,7 +27,7 @@ const TRANSFER_AMOUNT = Number(process.env.TRANSFER_AMOUNT ?? 50); // Default 50
 const TRANSFER_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes in milliseconds
 
 // ================= NEW RESERVE CONFIG =================
-const UTA_RESERVE_BALANCE = Number(process.env.UTA_RESERVE_BALANCE ?? 401);
+const UTA_RESERVE_BALANCE = Number(process.env.UTA_RESERVE_BALANCE ?? 501);
 const RESERVE_CHECK_INTERVAL_MS = Number(
   process.env.RESERVE_CHECK_INTERVAL_MS ?? 60 * 1000
 );
