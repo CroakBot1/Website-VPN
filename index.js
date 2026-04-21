@@ -10,8 +10,8 @@ const API_KEY = String(process.env.API_KEY || "").trim();
 const API_SECRET = String(process.env.API_SECRET || "").trim();
 
 const SYMBOL = String(process.env.SYMBOL || "BTCUSDT").trim();
-const MAX_LOSS = Number(process.env.MAX_LOSS ?? -70);
-const TAKE_PROFIT = Number(process.env.TAKE_PROFIT ?? 90);
+const MAX_LOSS = Number(process.env.MAX_LOSS ?? -0.01);
+const TAKE_PROFIT = Number(process.env.TAKE_PROFIT ?? 0.01);
 
 const FAST_INTERVAL = 2000;
 const SLOW_INTERVAL = 10000;
@@ -29,7 +29,7 @@ const TRANSFER_AMOUNT = Number(process.env.TRANSFER_AMOUNT ?? 50);
 const TRANSFER_INTERVAL_MS = 5 * 60 * 1000;
 
 // ================= RESERVE CONFIG =================
-const UTA_RESERVE_BALANCE = Number(process.env.UTA_RESERVE_BALANCE ?? 401);
+const UTA_RESERVE_BALANCE = Number(process.env.UTA_RESERVE_BALANCE ?? 501);
 const RESERVE_CHECK_INTERVAL_MS = Number(
   process.env.RESERVE_CHECK_INTERVAL_MS ?? 60 * 1000
 );
