@@ -6,29 +6,27 @@ import WebSocket from "ws";
 dotenv.config();
 
 // ================= CONFIG =================
-const API_KEY = String(process.env.API_KEY || "").trim();
-const API_SECRET = String(process.env.API_SECRET || "").trim();
+const API_KEY = process.env.API_KEY;
+const API_SECRET = process.env.API_SECRET;
 
-const SYMBOL = String(process.env.SYMBOL || "BTCUSDT").trim();
-const MAX_LOSS = Number(process.env.MAX_LOSS ?? -0.01);
-const TAKE_PROFIT = Number(process.env.TAKE_PROFIT ?? 0.01);
+const SYMBOL = process.env.SYMBOL || "BTCUSDT";
+const MAX_LOSS = Number(process.env.MAX_LOSS ?? -70);
+const TAKE_PROFIT = Number(process.env.TAKE_PROFIT ?? 90);
 
 const FAST_INTERVAL = 2000;
 const SLOW_INTERVAL = 10000;
 let currentInterval = SLOW_INTERVAL;
 
-const RECV_WINDOW = String(process.env.RECV_WINDOW || "5000");
-const POSITION_CACHE_TTL = Number(process.env.POSITION_CACHE_TTL ?? 3000);
-const CLOSE_VERIFY_RETRIES = Number(process.env.CLOSE_VERIFY_RETRIES ?? 10);
-const CLOSE_VERIFY_DELAY = Number(process.env.CLOSE_VERIFY_DELAY ?? 1000);
-const HTTP_TIMEOUT_MS = Number(process.env.HTTP_TIMEOUT_MS ?? 15000);
-const TELEGRAM_TIMEOUT_MS = Number(process.env.TELEGRAM_TIMEOUT_MS ?? 15000);
+const RECV_WINDOW = "5000";
+const POSITION_CACHE_TTL = 3000;
+const CLOSE_VERIFY_RETRIES = 10;
+const CLOSE_VERIFY_DELAY = 1000;
 
 // ================= TRANSFER CONFIG =================
-const TRANSFER_AMOUNT = Number(process.env.TRANSFER_AMOUNT ?? 50);
-const TRANSFER_INTERVAL_MS = 5 * 60 * 1000;
+const TRANSFER_AMOUNT = Number(process.env.TRANSFER_AMOUNT ?? 50); // Default 50 USDT
+const TRANSFER_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes in milliseconds
 
-// ================= RESERVE CONFIG =================
+// ================= NEW RESERVE CONFIG =================
 const UTA_RESERVE_BALANCE = Number(process.env.UTA_RESERVE_BALANCE ?? 501);
 const RESERVE_CHECK_INTERVAL_MS = Number(
   process.env.RESERVE_CHECK_INTERVAL_MS ?? 60 * 1000
@@ -36,18 +34,10 @@ const RESERVE_CHECK_INTERVAL_MS = Number(
 const RESERVE_TRANSFER_MIN_AMOUNT = Number(
   process.env.RESERVE_TRANSFER_MIN_AMOUNT ?? 0.01
 );
+
+// ================= NEW FAST RESERVE WS CONFIG =================
 const RESERVE_FAST_TRANSFER_DELAY_MS = Number(
   process.env.RESERVE_FAST_TRANSFER_DELAY_MS ?? 1000
-);
-const RESERVE_BALANCE_CACHE_TTL_MS = Math.max(
-  RESERVE_CHECK_INTERVAL_MS,
-  RESERVE_FAST_TRANSFER_DELAY_MS + 1000,
-  5000
-);
-const RESERVE_TRANSFER_SETTLE_MS = Math.max(
-  RESERVE_FAST_TRANSFER_DELAY_MS + 2500,
-  RESERVE_CHECK_INTERVAL_MS + 1000,
-  4000
 );
 
 /**
@@ -56,22 +46,17 @@ const RESERVE_TRANSFER_SETTLE_MS = Math.max(
  * - demo    = bybit demo trading
  * - testnet = bybit testnet
  */
-const TRADE_MODE = String(process.env.TRADE_MODE || "mainnet")
-  .trim()
-  .toLowerCase();
+const TRADE_MODE = String(process.env.TRADE_MODE || "mainnet").toLowerCase();
 
 const FORCE_REST_CLOSE_ON_DEMO =
-  String(process.env.FORCE_REST_CLOSE_ON_DEMO ?? "true").toLowerCase() ===
-  "true";
+  String(process.env.FORCE_REST_CLOSE_ON_DEMO ?? "true").toLowerCase() === "true";
 
 // ================= TELEGRAM CONFIG =================
-const TELEGRAM_BOT_TOKEN = String(process.env.TELEGRAM_BOT_TOKEN || "").trim();
-const TELEGRAM_CHAT_ID = String(process.env.TELEGRAM_CHAT_ID || "").trim();
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
 const TELEGRAM_LOGS_ENABLED =
   String(process.env.TELEGRAM_LOGS_ENABLED ?? "true").toLowerCase() === "true";
-const TELEGRAM_HEARTBEAT_MINUTES = Number(
-  process.env.TELEGRAM_HEARTBEAT_MINUTES ?? 10
-);
+const TELEGRAM_HEARTBEAT_MINUTES = Number(process.env.TELEGRAM_HEARTBEAT_MINUTES ?? 10);
 const TELEGRAM_SILENT =
   String(process.env.TELEGRAM_SILENT ?? "false").toLowerCase() === "true";
 
@@ -99,17 +84,9 @@ const PRIVATE_WS_URL =
 const TRADE_WS_URL =
   TRADE_MODE === "testnet"
     ? "wss://stream-testnet.bybit.com/v5/trade"
-    : TRADE_MODE === "demo"
-    ? null
     : "wss://stream.bybit.com/v5/trade";
 
 // ================= VALIDATION =================
-function assertNumber(name, value) {
-  if (!Number.isFinite(value)) {
-    throw new Error(`Invalid numeric env: ${name}`);
-  }
-}
-
 if (!API_KEY || !API_SECRET) {
   throw new Error("Missing API_KEY or API_SECRET in .env");
 }
@@ -117,22 +94,6 @@ if (!API_KEY || !API_SECRET) {
 if (!["mainnet", "demo", "testnet"].includes(TRADE_MODE)) {
   throw new Error("TRADE_MODE must be one of: mainnet, demo, testnet");
 }
-
-assertNumber("MAX_LOSS", MAX_LOSS);
-assertNumber("TAKE_PROFIT", TAKE_PROFIT);
-assertNumber("TRANSFER_AMOUNT", TRANSFER_AMOUNT);
-assertNumber("UTA_RESERVE_BALANCE", UTA_RESERVE_BALANCE);
-assertNumber("RESERVE_CHECK_INTERVAL_MS", RESERVE_CHECK_INTERVAL_MS);
-assertNumber("RESERVE_TRANSFER_MIN_AMOUNT", RESERVE_TRANSFER_MIN_AMOUNT);
-assertNumber(
-  "RESERVE_FAST_TRANSFER_DELAY_MS",
-  RESERVE_FAST_TRANSFER_DELAY_MS
-);
-assertNumber("POSITION_CACHE_TTL", POSITION_CACHE_TTL);
-assertNumber("CLOSE_VERIFY_RETRIES", CLOSE_VERIFY_RETRIES);
-assertNumber("CLOSE_VERIFY_DELAY", CLOSE_VERIFY_DELAY);
-assertNumber("HTTP_TIMEOUT_MS", HTTP_TIMEOUT_MS);
-assertNumber("TELEGRAM_TIMEOUT_MS", TELEGRAM_TIMEOUT_MS);
 
 // ================= STATE =================
 let running = true;
@@ -152,18 +113,10 @@ let tradeHeartbeat = null;
 let latestPosition = null;
 let latestPositionUpdatedAt = 0;
 
+// ================= NEW FAST RESERVE STATE =================
 let latestUtaUsdtWalletBalance = null;
 let latestUtaUsdtWalletBalanceUpdatedAt = 0;
 let reserveFastTransferTimer = null;
-let reserveTransferState = {
-  inFlight: false,
-  direction: null,
-  amount: 0,
-  source: null,
-  startedAt: 0,
-  expectedBalance: null,
-  settleTimer: null,
-};
 
 const pendingTradeRequests = [];
 
@@ -201,8 +154,8 @@ function roundDown(value, decimals = 6) {
   return Math.floor(Number(value) * factor) / factor;
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+async function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 async function sendTelegram(message, options = {}) {
@@ -210,11 +163,12 @@ async function sendTelegram(message, options = {}) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
 
   telegramQueue.push({
-    message: String(message),
+    message,
     disableNotification: options.disableNotification ?? TELEGRAM_SILENT,
   });
 
   if (telegramSending) return;
+
   telegramSending = true;
 
   try {
@@ -236,7 +190,7 @@ async function sendTelegram(message, options = {}) {
             disable_notification: item.disableNotification,
           },
           {
-            timeout: TELEGRAM_TIMEOUT_MS,
+            timeout: 15000,
           }
         );
 
@@ -254,40 +208,39 @@ function installTelegramConsoleMirror() {
   console.log = (...args) => {
     rawConsole.log(...args);
     const text = formatLogArgs(args);
-    void sendTelegram(`ℹ️ ${text}`);
+    sendTelegram(`â„¹ï¸ ${text}`).catch(() => {});
   };
 
   console.info = (...args) => {
     rawConsole.info(...args);
     const text = formatLogArgs(args);
-    void sendTelegram(`ℹ️ ${text}`);
+    sendTelegram(`â„¹ï¸ ${text}`).catch(() => {});
   };
 
   console.warn = (...args) => {
     rawConsole.warn(...args);
     const text = formatLogArgs(args);
-    void sendTelegram(`⚠️ ${text}`);
+    sendTelegram(`âš ï¸ ${text}`).catch(() => {});
   };
 
   console.error = (...args) => {
     rawConsole.error(...args);
     const text = formatLogArgs(args);
-    void sendTelegram(`❌ ${text}`);
+    sendTelegram(`â Œ ${text}`).catch(() => {});
   };
 }
 
 function startTelegramHeartbeat() {
   if (!TELEGRAM_LOGS_ENABLED) return;
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
-
   if (telegramHeartbeat) clearInterval(telegramHeartbeat);
 
   const intervalMs = Math.max(1, TELEGRAM_HEARTBEAT_MINUTES) * 60 * 1000;
 
   telegramHeartbeat = setInterval(() => {
-    void sendTelegram(
+    sendTelegram(
       [
-        "💓 BOT HEARTBEAT",
+        "ðŸ’“ BOT HEARTBEAT",
         `SYMBOL: ${SYMBOL}`,
         `MODE: ${TRADE_MODE}`,
         `privateReady: ${privateReady}`,
@@ -296,13 +249,11 @@ function startTelegramHeartbeat() {
         `latestPositionUpdatedAt: ${latestPositionUpdatedAt || 0}`,
         `UTA_RESERVE_BALANCE: ${UTA_RESERVE_BALANCE}`,
         `latestUtaUsdtWalletBalance: ${
-          latestUtaUsdtWalletBalance === null
-            ? "null"
-            : latestUtaUsdtWalletBalance
+          latestUtaUsdtWalletBalance === null ? "null" : latestUtaUsdtWalletBalance
         }`,
       ].join("\n"),
       { disableNotification: true }
-    );
+    ).catch(() => {});
   }, intervalMs);
 }
 
@@ -319,7 +270,7 @@ function safeJsonParse(raw) {
   }
 }
 
-function startHeartbeat(ws) {
+function startHeartbeat(ws, label) {
   return setInterval(() => {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ op: "ping" }));
@@ -333,9 +284,22 @@ function generateWsAuth() {
   return { expires, signature };
 }
 
+function signRestGet(params) {
+  const query = Object.keys(params)
+    .sort()
+    .map((key) => `${key}=${params[key]}`)
+    .join("&");
+
+  return hmacSha256(query);
+}
+
+function signRestPost(timestamp, bodyString) {
+  return hmacSha256(`${timestamp}${API_KEY}${RECV_WINDOW}${bodyString}`);
+}
+
+// ===== NEW: V5 header-based GET signing (for wallet-balance) =====
 function buildSortedQueryString(params) {
   return Object.keys(params)
-    .filter((key) => params[key] !== undefined && params[key] !== null)
     .sort()
     .map((key) => `${key}=${encodeURIComponent(params[key])}`)
     .join("&");
@@ -345,84 +309,19 @@ function signV5Get(timestamp, queryString) {
   return hmacSha256(`${timestamp}${API_KEY}${RECV_WINDOW}${queryString}`);
 }
 
-function signV5Post(timestamp, bodyString) {
-  return hmacSha256(`${timestamp}${API_KEY}${RECV_WINDOW}${bodyString}`);
-}
-
-function buildV5GetHeaders(timestamp, sign) {
-  return {
-    "X-BAPI-API-KEY": API_KEY,
-    "X-BAPI-TIMESTAMP": timestamp,
-    "X-BAPI-RECV-WINDOW": RECV_WINDOW,
-    "X-BAPI-SIGN": sign,
-  };
-}
-
-function buildV5PostHeaders(timestamp, sign) {
-  return {
-    "Content-Type": "application/json",
-    "X-BAPI-API-KEY": API_KEY,
-    "X-BAPI-TIMESTAMP": timestamp,
-    "X-BAPI-RECV-WINDOW": RECV_WINDOW,
-    "X-BAPI-SIGN": sign,
-  };
-}
-
-async function bybitGet(path, params = {}) {
-  const timestamp = Date.now().toString();
-  const queryString = buildSortedQueryString(params);
-  const sign = signV5Get(timestamp, queryString);
-
-  const res = await axios.get(`${HTTP_BASE_URL}${path}`, {
-    params,
-    headers: buildV5GetHeaders(timestamp, sign),
-    timeout: HTTP_TIMEOUT_MS,
-  });
-
-  return res.data;
-}
-
-async function bybitPost(path, body = {}) {
-  const timestamp = Date.now().toString();
-  const bodyString = JSON.stringify(body);
-  const sign = signV5Post(timestamp, bodyString);
-
-  const res = await axios.post(`${HTTP_BASE_URL}${path}`, body, {
-    headers: buildV5PostHeaders(timestamp, sign),
-    timeout: HTTP_TIMEOUT_MS,
-  });
-
-  return res.data;
-}
-
 function getActiveSymbolPosition(list) {
   if (!Array.isArray(list)) return null;
-
-  const active = list.find(
-    (p) =>
-      p &&
-      p.symbol === SYMBOL &&
-      Number(p.size || 0) > 0 &&
-      typeof p.side === "string" &&
-      p.side.length > 0 &&
-      p.side !== "None"
-  );
-
-  return active || null;
+  return list.find((p) => p.symbol === SYMBOL) || null;
 }
 
 function flushPendingTradeRequests() {
-  while (
-    pendingTradeRequests.length &&
-    tradeReady &&
-    tradeWs &&
-    tradeWs.readyState === WebSocket.OPEN
-  ) {
+  while (pendingTradeRequests.length && tradeReady && tradeWs?.readyState === WebSocket.OPEN) {
     tradeWs.send(JSON.stringify(pendingTradeRequests.shift()));
   }
 }
 
 // ================= POSITION CACHE HELPERS =================
+// Additive fix only: these helpers are used by existing logic but were missing.
 function setLatestPosition(pos) {
   latestPosition = pos;
   latestPositionUpdatedAt = Date.now();
@@ -440,15 +339,14 @@ async function getPosition() {
     latestPosition &&
     now - latestPositionUpdatedAt <= POSITION_CACHE_TTL &&
     Number(latestPosition.size || 0) > 0 &&
-    latestPosition.side &&
-    latestPosition.side !== "None"
+    latestPosition.side
   ) {
     return latestPosition;
   }
 
   const pos = await getPositionViaRest();
 
-  if (!pos || Number(pos.size || 0) <= 0 || !pos.side || pos.side === "None") {
+  if (!pos || Number(pos.size) <= 0 || !pos.side) {
     clearLatestPosition();
     return null;
   }
@@ -457,127 +355,29 @@ async function getPosition() {
   return pos;
 }
 
-// ================= RESERVE HELPERS =================
+// ================= NEW FAST RESERVE HELPERS =================
 function setLatestUTAUsdtWalletBalance(balance) {
   const normalized = Number(balance);
-  if (!Number.isFinite(normalized)) return latestUtaUsdtWalletBalance;
-
-  const previousBalance = latestUtaUsdtWalletBalance;
+  if (!Number.isFinite(normalized)) return;
 
   latestUtaUsdtWalletBalance = normalized;
   latestUtaUsdtWalletBalanceUpdatedAt = Date.now();
-
-  return previousBalance;
-}
-
-function invalidateLatestUTAUsdtWalletBalanceCache() {
-  latestUtaUsdtWalletBalanceUpdatedAt = 0;
-}
-
-function hasFreshUTAUsdtWalletBalance(maxAgeMs = RESERVE_BALANCE_CACHE_TTL_MS) {
-  return (
-    latestUtaUsdtWalletBalance !== null &&
-    Date.now() - latestUtaUsdtWalletBalanceUpdatedAt <= maxAgeMs
-  );
-}
-
-function clearReserveTransferState(reason = "clear") {
-  if (reserveTransferState.settleTimer) {
-    clearTimeout(reserveTransferState.settleTimer);
-  }
-
-  reserveTransferState = {
-    inFlight: false,
-    direction: null,
-    amount: 0,
-    source: null,
-    startedAt: 0,
-    expectedBalance: null,
-    settleTimer: null,
-  };
-
-  console.log(`ℹ️ Reserve transfer state cleared [${reason}]`);
-}
-
-function isReserveTransferInFlight() {
-  return reserveTransferState.inFlight;
-}
-
-function markReserveTransferInFlight({
-  direction,
-  amount,
-  source,
-  expectedBalance = UTA_RESERVE_BALANCE,
-}) {
-  if (reserveTransferState.settleTimer) {
-    clearTimeout(reserveTransferState.settleTimer);
-  }
-
-  reserveTransferState = {
-    inFlight: true,
-    direction,
-    amount,
-    source,
-    startedAt: Date.now(),
-    expectedBalance,
-    settleTimer: null,
-  };
-
-  invalidateLatestUTAUsdtWalletBalanceCache();
-
-  reserveTransferState.settleTimer = setTimeout(async () => {
-    const snapshot = { ...reserveTransferState };
-    clearReserveTransferState(`settle-timeout:${snapshot.direction || "unknown"}`);
-
-    try {
-      console.log(
-        `⏲️ Reserve transfer settle window expired. Rechecking reserve... [${
-          snapshot.source || "unknown"
-        }]`
-      );
-      await maintainUTAReserveBalance(
-        `post-transfer-settle:${snapshot.direction || "unknown"}`
-      );
-    } catch (err) {
-      console.error("POST TRANSFER SETTLE CHECK ERROR:", err.message);
-    }
-  }, RESERVE_TRANSFER_SETTLE_MS);
-
-  console.log(
-    `🚚 Reserve transfer in-flight | direction=${direction} | amount=${amount} | expectedBalance=${expectedBalance} | settleMs=${RESERVE_TRANSFER_SETTLE_MS} | source=${source}`
-  );
-}
-
-function maybeFinalizeReserveTransferFromBalance(balance, reason = "wallet-update") {
-  if (!reserveTransferState.inFlight) return false;
-  if (!Number.isFinite(balance)) return false;
-
-  const expectedBalance = Number(reserveTransferState.expectedBalance);
-  if (!Number.isFinite(expectedBalance)) return false;
-
-  const delta = Math.abs(roundDown(balance - expectedBalance, 6));
-  if (delta >= RESERVE_TRANSFER_MIN_AMOUNT) return false;
-
-  console.log(
-    `✅ Reserve transfer settled from ${reason}. balance=${balance} | expected=${expectedBalance}`
-  );
-  clearReserveTransferState(`balanced:${reason}`);
-  return true;
 }
 
 function extractUnifiedUsdtWalletBalanceFromWalletStream(data) {
   if (!Array.isArray(data)) return null;
 
   for (const account of data) {
-    const accountType = String(account?.accountType || "").toUpperCase();
-    if (accountType !== "UNIFIED") continue;
+    if (account?.accountType !== "UNIFIED") continue;
     if (!Array.isArray(account.coin)) continue;
 
     const usdtCoin = account.coin.find((c) => c?.coin === "USDT");
     if (!usdtCoin) continue;
 
     const walletBalance = Number(usdtCoin.walletBalance || 0);
-    if (Number.isFinite(walletBalance)) return walletBalance;
+    if (Number.isFinite(walletBalance)) {
+      return walletBalance;
+    }
   }
 
   return null;
@@ -593,28 +393,14 @@ function clearReserveFastTransferTimer() {
 function scheduleFastReserveTransferCheck(reason = "wallet-stream") {
   if (TRADE_MODE !== "mainnet") return;
 
-  if (isReserveTransferInFlight()) {
-    console.log(
-      `⏳ Fast reserve check skipped because a reserve transfer is still settling. [${reason}]`
-    );
-    return;
-  }
-
   clearReserveFastTransferTimer();
 
   reserveFastTransferTimer = setTimeout(async () => {
     reserveFastTransferTimer = null;
 
     try {
-      if (isReserveTransferInFlight()) {
-        console.log(
-          `⏳ Fast reserve check skipped on execution because a reserve transfer is still settling. [${reason}]`
-        );
-        return;
-      }
-
       console.log(
-        `⚡ Fast reserve transfer check triggered (${reason}) after ${RESERVE_FAST_TRANSFER_DELAY_MS}ms`
+        `âš¡ Fast reserve transfer check triggered (${reason}) after ${RESERVE_FAST_TRANSFER_DELAY_MS}ms`
       );
       await maintainUTAReserveBalance("wallet-fast-trigger");
     } catch (err) {
@@ -623,57 +409,30 @@ function scheduleFastReserveTransferCheck(reason = "wallet-stream") {
   }, RESERVE_FAST_TRANSFER_DELAY_MS);
 }
 
-function maybeTriggerFastReserveTransferFromWallet(
-  balance,
-  reason = "wallet-stream",
-  previousBalance = null
-) {
+function maybeTriggerFastReserveTransferFromWallet(balance, reason = "wallet-stream") {
   if (!Number.isFinite(balance)) return;
 
-  maybeFinalizeReserveTransferFromBalance(balance, `${reason}-balance-update`);
+  const excess = roundDown(balance - UTA_RESERVE_BALANCE, 6);
 
-  const delta = roundDown(balance - UTA_RESERVE_BALANCE, 6);
-  const absDelta = Math.abs(delta);
-  const balanceChange =
-    Number.isFinite(previousBalance) && previousBalance !== null
-      ? roundDown(balance - previousBalance, 6)
-      : null;
-
-  if (absDelta < RESERVE_TRANSFER_MIN_AMOUNT) return;
-
-  if (
-    balanceChange !== null &&
-    Math.abs(balanceChange) < RESERVE_TRANSFER_MIN_AMOUNT
-  ) {
-    return;
-  }
-
-  if (isReserveTransferInFlight()) {
+  if (excess >= RESERVE_TRANSFER_MIN_AMOUNT) {
     console.log(
-      `⏳ Wallet WS detected reserve delta=${delta}, but reserve transfer is already settling. No duplicate fast check.`
+      `âš¡ Wallet WS detected UTA USDT excess=${excess}. Scheduling fast transfer check...`
     );
-    return;
+    scheduleFastReserveTransferCheck(reason);
   }
-
-  console.log(
-    `⚡ Wallet WS detected UTA reserve delta=${delta}${
-      balanceChange === null ? "" : ` | balanceChange=${balanceChange}`
-    }. Scheduling fast reserve check...`
-  );
-  scheduleFastReserveTransferCheck(reason);
 }
 
-// ================= OPEN POSITION GUARD =================
+// ================= NEW: OPEN POSITION GUARD FOR UTA -> FUND =================
 async function hasOpenPositionForReserveProtection() {
   try {
     const pos = await getPosition();
 
-    if (!pos || Number(pos.size || 0) <= 0 || !pos.side || pos.side === "None") {
+    if (!pos || Number(pos.size) <= 0 || !pos.side) {
       return false;
     }
 
     console.log(
-      `🛑 Reserve protection active: open position detected | symbol=${pos.symbol} | side=${pos.side} | size=${pos.size}`
+      `ðŸ›‘ Reserve protection active: open position detected | symbol=${pos.symbol} | side=${pos.side} | size=${pos.size}`
     );
     return true;
   } catch (err) {
@@ -688,19 +447,26 @@ async function hasOpenPositionForReserveProtection() {
 // ================= REST FALLBACKS =================
 async function getPositionViaRest() {
   try {
-    const data = await bybitGet("/v5/position/list", {
+    const timestamp = Date.now().toString();
+
+    const params = {
+      api_key: API_KEY,
+      timestamp,
+      recv_window: RECV_WINDOW,
       category: "linear",
       symbol: SYMBOL,
+    };
+
+    const sign = signRestGet(params);
+
+    const res = await axios.get(`${HTTP_BASE_URL}/v5/position/list`, {
+      params: { ...params, sign },
     });
 
-    if (data?.retCode !== 0) {
-      throw new Error(data?.retMsg || "Unknown position list error");
-    }
+    const list = res?.data?.result?.list;
+    if (!list || list.length === 0) return null;
 
-    const list = data?.result?.list;
-    const pos = getActiveSymbolPosition(list);
-
-    return pos || null;
+    return list[0];
   } catch (err) {
     console.error("GET POSITION REST ERROR:", err.response?.data || err.message);
     return null;
@@ -709,6 +475,8 @@ async function getPositionViaRest() {
 
 async function closePositionViaRest(side, size) {
   try {
+    const timestamp = Date.now().toString();
+
     const body = {
       category: "linear",
       symbol: SYMBOL,
@@ -719,51 +487,68 @@ async function closePositionViaRest(side, size) {
       reduceOnly: true,
     };
 
-    const data = await bybitPost("/v5/order/create", body);
+    const bodyString = JSON.stringify(body);
+    const sign = signRestPost(timestamp, bodyString);
 
-    if (data?.retCode !== 0) {
-      throw new Error(`REST close failed: ${data?.retMsg || "unknown error"}`);
+    const res = await axios.post(`${HTTP_BASE_URL}/v5/order/create`, body, {
+      headers: {
+        "Content-Type": "application/json",
+        "X-BAPI-API-KEY": API_KEY,
+        "X-BAPI-TIMESTAMP": timestamp,
+        "X-BAPI-RECV-WINDOW": RECV_WINDOW,
+        "X-BAPI-SIGN": sign,
+      },
+    });
+
+    if (res?.data?.retCode !== 0) {
+      throw new Error(`REST close failed: ${res?.data?.retMsg || "unknown error"}`);
     }
 
-    console.log("✅ POSITION CLOSE SENT VIA REST:", data);
+    console.log("âœ… POSITION CLOSE SENT VIA REST:", res.data);
   } catch (err) {
     console.error("CLOSE POSITION REST ERROR:", err.response?.data || err.message);
     throw err;
   }
 }
 
-// ================= UTA BALANCE CHECK =================
-async function getUTAUsdtWalletBalance(options = {}) {
-  const {
-    preferCache = true,
-    maxAgeMs = RESERVE_BALANCE_CACHE_TTL_MS,
-  } = options;
-
+// ================= NEW: UTA BALANCE CHECK =================
+async function getUTAUsdtWalletBalance() {
   if (TRADE_MODE !== "mainnet") {
-    console.log("🧪 Skipping UTA reserve check balance fetch (Demo/Testnet mode active)");
+    console.log("ðŸ§ª Skipping UTA reserve check balance fetch (Demo/Testnet mode active)");
     return null;
   }
 
-  if (preferCache && hasFreshUTAUsdtWalletBalance(maxAgeMs)) {
-    return latestUtaUsdtWalletBalance;
-  }
-
   try {
-    const data = await bybitGet("/v5/account/wallet-balance", {
+    const timestamp = Date.now().toString();
+
+    const params = {
       accountType: "UNIFIED",
       coin: "USDT",
+    };
+
+    const queryString = buildSortedQueryString(params);
+    const sign = signV5Get(timestamp, queryString);
+
+    const res = await axios.get(`${HTTP_BASE_URL}/v5/account/wallet-balance`, {
+      params,
+      headers: {
+        "X-BAPI-API-KEY": API_KEY,
+        "X-BAPI-TIMESTAMP": timestamp,
+        "X-BAPI-RECV-WINDOW": RECV_WINDOW,
+        "X-BAPI-SIGN": sign,
+      },
+      timeout: 15000,
     });
 
-    if (data?.retCode !== 0) {
-      throw new Error(data?.retMsg || "Unknown wallet balance error");
+    if (res?.data?.retCode !== 0) {
+      throw new Error(res?.data?.retMsg || "Unknown wallet balance error");
     }
 
-    const account = data?.result?.list?.[0];
+    const account = res?.data?.result?.list?.[0];
     const usdtCoin = account?.coin?.find((c) => c.coin === "USDT");
 
     if (!usdtCoin) {
-      console.log("ℹ️ No USDT coin entry found in UTA wallet-balance response");
-      setLatestUTAUsdtWalletBalance(0);
+      console.log("â„¹ï¸ No USDT coin entry found in UTA wallet-balance response");
       return 0;
     }
 
@@ -773,67 +558,7 @@ async function getUTAUsdtWalletBalance(options = {}) {
     setLatestUTAUsdtWalletBalance(normalized);
     return normalized;
   } catch (err) {
-    console.error(
-      "GET UTA USDT BALANCE ERROR:",
-      err.response?.data || err.message
-    );
-    return null;
-  }
-}
-
-async function getInternalTransferAvailableAmount(fromAccountType, toAccountType) {
-  if (TRADE_MODE !== "mainnet") {
-    console.log(
-      `🧪 Skipping internal transfer capacity fetch (${fromAccountType} -> ${toAccountType}) in Demo/Testnet mode`
-    );
-    return null;
-  }
-
-  try {
-    const data = await bybitGet(
-      "/v5/asset/transfer/query-account-coin-balance",
-      {
-        accountType: fromAccountType,
-        toAccountType,
-        coin: "USDT",
-        withTransferSafeAmount: 1,
-      }
-    );
-
-    if (data?.retCode !== 0) {
-      throw new Error(data?.retMsg || "Unknown internal transfer balance error");
-    }
-
-    const balance = data?.result?.balance || {};
-    const transferSafeAmount = Number(balance.transferSafeAmount || NaN);
-    const transferBalance = Number(balance.transferBalance || NaN);
-    const walletBalance = Number(balance.walletBalance || NaN);
-
-    const available = Number.isFinite(transferSafeAmount)
-      ? transferSafeAmount
-      : Number.isFinite(transferBalance)
-      ? transferBalance
-      : Number.isFinite(walletBalance)
-      ? walletBalance
-      : 0;
-
-    return {
-      available: Math.max(0, roundDown(available, 6)),
-      transferSafeAmount: Number.isFinite(transferSafeAmount)
-        ? roundDown(transferSafeAmount, 6)
-        : null,
-      transferBalance: Number.isFinite(transferBalance)
-        ? roundDown(transferBalance, 6)
-        : null,
-      walletBalance: Number.isFinite(walletBalance)
-        ? roundDown(walletBalance, 6)
-        : null,
-    };
-  } catch (err) {
-    console.error(
-      `GET INTERNAL TRANSFER CAPACITY ERROR (${fromAccountType} -> ${toAccountType}):`,
-      err.response?.data || err.message
-    );
+    console.error("GET UTA USDT BALANCE ERROR:", err.response?.data || err.message);
     return null;
   }
 }
@@ -845,29 +570,29 @@ async function verifyPositionClosed(retries = CLOSE_VERIFY_RETRIES) {
 
     const pos = await getPositionViaRest();
 
-    if (!pos || Number(pos.size || 0) <= 0 || !pos.side || pos.side === "None") {
+    if (!pos || Number(pos.size) <= 0 || !pos.side) {
       clearLatestPosition();
       currentInterval = SLOW_INTERVAL;
-      console.log("✅ Position confirmed closed");
+      console.log("âœ… Position confirmed closed");
       return true;
     }
 
     setLatestPosition(pos);
     console.log(
-      `⏳ Close verification attempt ${i + 1}/${retries}: position still open | size=${pos.size} | pnl=${Number(
+      `â ³ Close verification attempt ${i + 1}/${retries}: position still open | size=${pos.size} | pnl=${Number(
         pos.unrealisedPnl || 0
       )}`
     );
   }
 
-  console.error("❌ Close sent but position still open after verification");
+  console.error("â Œ Close sent but position still open after verification");
   return false;
 }
 
 // ================= CLOSE POSITION =================
 async function closePosition(side, size) {
   if (isClosing) {
-    console.log("⏳ Close already in progress, skipping duplicate request...");
+    console.log("â ³ Close already in progress, skipping duplicate request...");
     return;
   }
 
@@ -877,7 +602,7 @@ async function closePosition(side, size) {
     clearLatestPosition();
 
     if (TRADE_MODE === "demo" && FORCE_REST_CLOSE_ON_DEMO) {
-      console.log("🧪 DEMO MODE: using REST fallback close...");
+      console.log("ðŸ§ª DEMO MODE: using REST fallback close...");
       await closePositionViaRest(side, size);
       await verifyPositionClosed();
       return;
@@ -903,12 +628,12 @@ async function closePosition(side, size) {
       ],
     };
 
-    if (TRADE_MODE !== "demo" && tradeReady && tradeWs?.readyState === WebSocket.OPEN) {
+    if (tradeReady && tradeWs?.readyState === WebSocket.OPEN) {
       tradeWs.send(JSON.stringify(payload));
-      console.log("✅ CLOSE REQUEST SENT VIA WS");
+      console.log("âœ… CLOSE REQUEST SENT VIA WS");
       await verifyPositionClosed();
     } else {
-      console.log("⚠️ TRADE WS not ready or disabled, fallback to REST close...");
+      console.log("âš ï¸ TRADE WS not ready, fallback to REST close...");
       await closePositionViaRest(side, size);
       await verifyPositionClosed();
     }
@@ -925,29 +650,39 @@ async function closePosition(side, size) {
 // ================= AUTO TRANSFER (FUNDING TO UTA) =================
 async function transferFundingToUTA() {
   if (TRADE_MODE !== "mainnet") {
-    console.log("🧪 Skipping Auto-Transfer (Demo/Testnet mode active)");
+    console.log("ðŸ§ª Skipping Auto-Transfer (Demo/Testnet mode active)");
     return;
   }
 
   try {
+    const timestamp = Date.now().toString();
+    const transferId = crypto.randomUUID();
+
     const body = {
-      transferId: crypto.randomUUID(),
+      transferId,
       coin: "USDT",
       amount: String(TRANSFER_AMOUNT),
       fromAccountType: "FUND",
-      toAccountType: "UNIFIED",
+      toAccountType: "UNIFIED", // Unified Trading Account
     };
 
-    const data = await bybitPost("/v5/asset/transfer/inter-transfer", body);
+    const bodyString = JSON.stringify(body);
+    const sign = signRestPost(timestamp, bodyString);
 
-    if (data?.retCode !== 0) {
-      console.warn(
-        `⚠️ Transfer Failed: ${data?.retMsg || "Insufficient balance or error"}`
-      );
+    const res = await axios.post(`${HTTP_BASE_URL}/v5/asset/transfer/inter-transfer`, body, {
+      headers: {
+        "Content-Type": "application/json",
+        "X-BAPI-API-KEY": API_KEY,
+        "X-BAPI-TIMESTAMP": timestamp,
+        "X-BAPI-RECV-WINDOW": RECV_WINDOW,
+        "X-BAPI-SIGN": sign,
+      },
+    });
+
+    if (res?.data?.retCode !== 0) {
+      console.warn(`âš ï¸ Transfer Failed: ${res?.data?.retMsg || "Insufficient balance or error"}`);
     } else {
-      console.log(
-        `💸 Success! Transferred ${TRANSFER_AMOUNT} USDT from FUNDING to UTA.`
-      );
+      console.log(`ðŸ’¸ Success! Transferred ${TRANSFER_AMOUNT} USDT from FUNDING to UTA.`);
     }
   } catch (err) {
     console.error("TRANSFER ERROR:", err.response?.data || err.message);
@@ -955,30 +690,25 @@ async function transferFundingToUTA() {
 }
 
 function startAutoTransfer() {
-  console.log(
-    `⏱️ Auto-Transfer Active: Moving ${TRANSFER_AMOUNT} USDT every 5 minutes.`
-  );
+  console.log(`â ±ï¸ Auto-Transfer Active: Moving ${TRANSFER_AMOUNT} USDT every 5 minutes.`);
 
   setInterval(() => {
-    void transferFundingToUTA();
+    transferFundingToUTA();
   }, TRANSFER_INTERVAL_MS);
 }
 
-// ================= UTA EXCESS -> FUNDING =================
-async function transferExcessUTAToFunding(amount, source = "reserve-excess") {
+// ================= NEW: UTA EXCESS -> FUNDING =================
+async function transferExcessUTAToFunding(amount) {
   if (TRADE_MODE !== "mainnet") {
-    console.log("🧪 Skipping UTA excess transfer (Demo/Testnet mode active)");
+    console.log("ðŸ§ª Skipping UTA excess transfer (Demo/Testnet mode active)");
     return;
   }
 
-  const requestedAmount = roundDown(amount, 6);
+  const normalizedAmount = roundDown(amount, 6);
 
-  if (
-    !Number.isFinite(requestedAmount) ||
-    requestedAmount < RESERVE_TRANSFER_MIN_AMOUNT
-  ) {
+  if (!Number.isFinite(normalizedAmount) || normalizedAmount < RESERVE_TRANSFER_MIN_AMOUNT) {
     console.log(
-      `ℹ️ UTA excess transfer skipped. Amount too small: ${requestedAmount} USDT`
+      `â„¹ï¸ UTA excess transfer skipped. Amount too small: ${normalizedAmount} USDT`
     );
     return;
   }
@@ -986,167 +716,55 @@ async function transferExcessUTAToFunding(amount, source = "reserve-excess") {
   const hasOpenPosition = await hasOpenPositionForReserveProtection();
   if (hasOpenPosition) {
     console.log(
-      "⏸️ UTA -> FUND transfer skipped because there is still an open position."
+      "â ¸ï¸ UTA -> FUND transfer skipped because there is still an open position."
     );
     return;
-  }
-
-  const capacity = await getInternalTransferAvailableAmount("UNIFIED", "FUND");
-  if (!capacity) {
-    console.warn("⚠️ UTA -> FUND transfer skipped: unable to read transfer capacity.");
-    return;
-  }
-
-  const normalizedAmount = roundDown(
-    Math.min(requestedAmount, Number(capacity.available || 0)),
-    6
-  );
-
-  if (normalizedAmount < RESERVE_TRANSFER_MIN_AMOUNT) {
-    console.log(
-      `ℹ️ UTA -> FUND transfer skipped. Transferable amount too small: ${normalizedAmount} USDT | requested=${requestedAmount}`
-    );
-    return;
-  }
-
-  if (normalizedAmount < requestedAmount) {
-    console.log(
-      `ℹ️ UTA -> FUND transfer capped by Bybit transferable amount. requested=${requestedAmount} | available=${capacity.available} | sending=${normalizedAmount}`
-    );
   }
 
   try {
+    const timestamp = Date.now().toString();
+    const transferId = crypto.randomUUID();
+
     const body = {
-      transferId: crypto.randomUUID(),
+      transferId,
       coin: "USDT",
       amount: String(normalizedAmount),
       fromAccountType: "UNIFIED",
       toAccountType: "FUND",
     };
 
-    const data = await bybitPost("/v5/asset/transfer/inter-transfer", body);
+    const bodyString = JSON.stringify(body);
+    const sign = signRestPost(timestamp, bodyString);
 
-    if (data?.retCode !== 0) {
+    const res = await axios.post(`${HTTP_BASE_URL}/v5/asset/transfer/inter-transfer`, body, {
+      headers: {
+        "Content-Type": "application/json",
+        "X-BAPI-API-KEY": API_KEY,
+        "X-BAPI-TIMESTAMP": timestamp,
+        "X-BAPI-RECV-WINDOW": RECV_WINDOW,
+        "X-BAPI-SIGN": sign,
+      },
+      timeout: 15000,
+    });
+
+    if (res?.data?.retCode !== 0) {
       console.warn(
-        `⚠️ UTA -> FUND transfer failed: ${data?.retMsg || "unknown transfer error"}`
+        `âš ï¸ UTA -> FUND transfer failed: ${res?.data?.retMsg || "unknown transfer error"}`
       );
       return;
     }
 
-    markReserveTransferInFlight({
-      direction: "UNIFIED->FUND",
-      amount: normalizedAmount,
-      source,
-      expectedBalance: UTA_RESERVE_BALANCE,
-    });
-
     console.log(
-      `💼 Reserve maintained: transferred ${normalizedAmount} USDT excess from UTA to Funding.`
+      `ðŸ’¼ Reserve maintained: transferred ${normalizedAmount} USDT excess from UTA to Funding.`
     );
   } catch (err) {
-    console.error(
-      "UTA -> FUND TRANSFER ERROR:",
-      err.response?.data || err.message
-    );
-  }
-}
-
-// ================= FUNDING -> UTA RESERVE TOP UP =================
-async function transferReserveDeficitFundingToUTA(
-  amount,
-  source = "reserve-deficit"
-) {
-  if (TRADE_MODE !== "mainnet") {
-    console.log("🧪 Skipping UTA reserve top-up (Demo/Testnet mode active)");
-    return;
-  }
-
-  const requestedAmount = roundDown(amount, 6);
-
-  if (
-    !Number.isFinite(requestedAmount) ||
-    requestedAmount < RESERVE_TRANSFER_MIN_AMOUNT
-  ) {
-    console.log(
-      `ℹ️ UTA reserve top-up skipped. Amount too small: ${requestedAmount} USDT`
-    );
-    return;
-  }
-
-  const capacity = await getInternalTransferAvailableAmount("FUND", "UNIFIED");
-  if (!capacity) {
-    console.warn(
-      "⚠️ FUND -> UTA reserve top-up skipped: unable to read transfer capacity."
-    );
-    return;
-  }
-
-  const normalizedAmount = roundDown(
-    Math.min(requestedAmount, Number(capacity.available || 0)),
-    6
-  );
-
-  if (normalizedAmount < RESERVE_TRANSFER_MIN_AMOUNT) {
-    console.log(
-      `ℹ️ FUND -> UTA reserve top-up skipped. Transferable amount too small: ${normalizedAmount} USDT | requested=${requestedAmount}`
-    );
-    return;
-  }
-
-  if (normalizedAmount < requestedAmount) {
-    console.log(
-      `ℹ️ FUND -> UTA reserve top-up capped by Bybit transferable amount. requested=${requestedAmount} | available=${capacity.available} | sending=${normalizedAmount}`
-    );
-  }
-
-  try {
-    const body = {
-      transferId: crypto.randomUUID(),
-      coin: "USDT",
-      amount: String(normalizedAmount),
-      fromAccountType: "FUND",
-      toAccountType: "UNIFIED",
-    };
-
-    const data = await bybitPost("/v5/asset/transfer/inter-transfer", body);
-
-    if (data?.retCode !== 0) {
-      console.warn(
-        `⚠️ FUND -> UTA reserve top-up failed: ${data?.retMsg || "unknown transfer error"}`
-      );
-      return;
-    }
-
-    markReserveTransferInFlight({
-      direction: "FUND->UNIFIED",
-      amount: normalizedAmount,
-      source,
-      expectedBalance: UTA_RESERVE_BALANCE,
-    });
-
-    console.log(
-      `🏦 Reserve maintained: transferred ${normalizedAmount} USDT from Funding to UTA to restore reserve.`
-    );
-  } catch (err) {
-    console.error(
-      "FUND -> UTA RESERVE TOP-UP ERROR:",
-      err.response?.data || err.message
-    );
+    console.error("UTA -> FUND TRANSFER ERROR:", err.response?.data || err.message);
   }
 }
 
 async function maintainUTAReserveBalance(source = "interval") {
   if (isReserveMaintaining) {
-    console.log(
-      `⏳ Reserve maintenance already running, skipping duplicate cycle... [${source}]`
-    );
-    return;
-  }
-
-  if (isReserveTransferInFlight()) {
-    console.log(
-      `⏳ Reserve transfer still settling, skipping maintenance cycle... [${source}]`
-    );
+    console.log(`â ³ Reserve maintenance already running, skipping duplicate cycle... [${source}]`);
     return;
   }
 
@@ -1154,56 +772,40 @@ async function maintainUTAReserveBalance(source = "interval") {
 
   try {
     if (TRADE_MODE !== "mainnet") {
-      console.log("🧪 Skipping reserve maintenance (Demo/Testnet mode active)");
+      console.log("ðŸ§ª Skipping reserve maintenance (Demo/Testnet mode active)");
       return;
     }
 
-    const preferCache = source !== "startup";
-    const utaUsdtBalance = await getUTAUsdtWalletBalance({ preferCache });
+    const utaUsdtBalance = await getUTAUsdtWalletBalance();
 
     if (utaUsdtBalance === null) {
-      console.warn(
-        `⚠️ Unable to read UTA USDT balance. Reserve maintenance skipped. [${source}]`
-      );
+      console.warn(`âš ï¸ Unable to read UTA USDT balance. Reserve maintenance skipped. [${source}]`);
       return;
     }
-
-    maybeFinalizeReserveTransferFromBalance(utaUsdtBalance, `maintain:${source}`);
 
     console.log(
-      `🏦 UTA USDT walletBalance: ${utaUsdtBalance} | reserve target: ${UTA_RESERVE_BALANCE} | source: ${source}`
+      `ðŸ ¦ UTA USDT walletBalance: ${utaUsdtBalance} | reserve target: ${UTA_RESERVE_BALANCE} | source: ${source}`
     );
 
-    const delta = roundDown(utaUsdtBalance - UTA_RESERVE_BALANCE, 6);
+    const excess = roundDown(utaUsdtBalance - UTA_RESERVE_BALANCE, 6);
 
-    if (Math.abs(delta) < RESERVE_TRANSFER_MIN_AMOUNT) {
-      console.log("✅ UTA reserve OK. No transfer needed.");
-      return;
-    }
-
-    if (delta > 0) {
+    if (excess >= RESERVE_TRANSFER_MIN_AMOUNT) {
       const hasOpenPosition = await hasOpenPositionForReserveProtection();
 
       if (hasOpenPosition) {
         console.log(
-          "⏸️ UTA reserve excess detected, but transfer to Funding is skipped because an open position is still present."
+          "â ¸ï¸ UTA reserve excess detected, but transfer to Funding is skipped because an open position is still present."
         );
         return;
       }
 
       console.log(
-        `💡 UTA balance exceeds reserve by ${delta} USDT. Transferring excess to Funding...`
+        `ðŸ’¡ UTA balance exceeds reserve by ${excess} USDT. Transferring excess to Funding...`
       );
-      await transferExcessUTAToFunding(delta, source);
-      return;
+      await transferExcessUTAToFunding(excess);
+    } else {
+      console.log("âœ… UTA reserve OK. No excess transfer needed.");
     }
-
-    const deficit = roundDown(Math.abs(delta), 6);
-
-    console.log(
-      `💡 UTA balance is below reserve by ${deficit} USDT. Topping up from Funding...`
-    );
-    await transferReserveDeficitFundingToUTA(deficit, source);
   } catch (err) {
     console.error("MAINTAIN UTA RESERVE ERROR:", err.message);
   } finally {
@@ -1213,15 +815,16 @@ async function maintainUTAReserveBalance(source = "interval") {
 
 function startUTAReserveMaintainer() {
   console.log(
-    `🛡️ UTA reserve maintainer active: keeping ${UTA_RESERVE_BALANCE} USDT in UTA, checking every ${Math.floor(
+    `ðŸ›¡ï¸ UTA reserve maintainer active: keeping ${UTA_RESERVE_BALANCE} USDT in UTA, checking every ${Math.floor(
       RESERVE_CHECK_INTERVAL_MS / 1000
     )} seconds.`
   );
 
-  void maintainUTAReserveBalance("startup");
+  // initial run
+  maintainUTAReserveBalance("startup").catch(() => {});
 
   setInterval(() => {
-    void maintainUTAReserveBalance("interval");
+    maintainUTAReserveBalance("interval").catch(() => {});
   }, RESERVE_CHECK_INTERVAL_MS);
 }
 
@@ -1229,8 +832,8 @@ function startUTAReserveMaintainer() {
 async function monitor() {
   const pos = await getPosition();
 
-  if (!pos || Number(pos.size || 0) <= 0 || !pos.side || pos.side === "None") {
-    console.log("📭 No open position");
+  if (!pos || Number(pos.size) <= 0 || !pos.side) {
+    console.log("ðŸ“­ No open position");
     currentInterval = SLOW_INTERVAL;
     return;
   }
@@ -1241,16 +844,16 @@ async function monitor() {
   const size = pos.size;
   const side = pos.side;
 
-  console.log(`📊 ${SYMBOL} PnL (USDT): ${pnl}`);
+  console.log(`ðŸ“Š ${SYMBOL} PnL (USDT): ${pnl}`);
 
   if (pnl <= MAX_LOSS) {
-    console.log(`🚨 MAX LOSS HIT (${MAX_LOSS}). Closing position...`);
+    console.log(`ðŸš¨ MAX LOSS HIT (${MAX_LOSS}). Closing position...`);
     await closePosition(side, size);
     return;
   }
 
   if (pnl >= TAKE_PROFIT) {
-    console.log(`🎯 TAKE PROFIT HIT (${TAKE_PROFIT}). Closing position...`);
+    console.log(`ðŸŽ¯ TAKE PROFIT HIT (${TAKE_PROFIT}). Closing position...`);
     await closePosition(side, size);
     return;
   }
@@ -1264,7 +867,7 @@ async function runMonitorSafely(source = "unknown") {
     isExecuting = true;
     await monitor();
   } catch (err) {
-    console.error(`⚠️ MONITOR ERROR [${source}]:`, err.message);
+    console.error(`âš ï¸ MONITOR ERROR [${source}]:`, err.message);
   } finally {
     isExecuting = false;
   }
@@ -1275,11 +878,11 @@ function connectPrivateWS() {
   let retry = 0;
 
   const openConnection = () => {
-    console.log(`🔌 Connecting PRIVATE WS (${TRADE_MODE})...`);
+    console.log(`ðŸ”Œ Connecting PRIVATE WS (${TRADE_MODE})...`);
     privateWs = new WebSocket(PRIVATE_WS_URL);
 
     privateWs.on("open", () => {
-      console.log("✅ PRIVATE WS CONNECTED");
+      console.log("âœ… PRIVATE WS CONNECTED");
       retry = 0;
 
       const { expires, signature } = generateWsAuth();
@@ -1297,7 +900,7 @@ function connectPrivateWS() {
       if (!msg) return;
 
       if (msg.op === "auth" && (msg.success === true || msg.retCode === 0)) {
-        console.log("🔐 PRIVATE WS AUTH OK");
+        console.log("ðŸ” PRIVATE WS AUTH OK");
 
         privateWs.send(
           JSON.stringify({
@@ -1309,24 +912,24 @@ function connectPrivateWS() {
         privateReady = true;
 
         if (privateHeartbeat) clearInterval(privateHeartbeat);
-        privateHeartbeat = startHeartbeat(privateWs);
+        privateHeartbeat = startHeartbeat(privateWs, "PRIVATE");
         return;
       }
 
-      if (msg.op === "pong" || msg.ret_msg === "pong") return;
+      if (msg.op === "pong") return;
 
       if (
         msg.op === "subscribe" &&
         (msg.success === true || msg.retCode === 0 || msg.ret_msg === "subscribe")
       ) {
-        console.log("📡 PRIVATE WS SUBSCRIBED");
+        console.log("ðŸ“¡ PRIVATE WS SUBSCRIBED");
         return;
       }
 
       if (msg.topic === "position" && Array.isArray(msg.data)) {
         const pos = getActiveSymbolPosition(msg.data);
 
-        if (!pos) {
+        if (!pos || Number(pos.size) <= 0 || !pos.side) {
           clearLatestPosition();
         } else {
           setLatestPosition(pos);
@@ -1340,21 +943,15 @@ function connectPrivateWS() {
         const wsBalance = extractUnifiedUsdtWalletBalanceFromWalletStream(msg.data);
 
         if (wsBalance !== null) {
-          const previousBalance = setLatestUTAUsdtWalletBalance(wsBalance);
+          setLatestUTAUsdtWalletBalance(wsBalance);
 
           console.log(
-            `💰 WALLET WS UPDATE: UTA USDT walletBalance=${wsBalance} | reserve=${UTA_RESERVE_BALANCE}`
+            `ðŸ’° WALLET WS UPDATE: UTA USDT walletBalance=${wsBalance} | reserve=${UTA_RESERVE_BALANCE}`
           );
 
-          maybeTriggerFastReserveTransferFromWallet(
-            wsBalance,
-            "wallet-stream",
-            previousBalance
-          );
+          maybeTriggerFastReserveTransferFromWallet(wsBalance, "wallet-stream");
         } else {
-          console.log(
-            "ℹ️ WALLET WS UPDATE received, but no UNIFIED USDT balance was found."
-          );
+          console.log("â„¹ï¸ WALLET WS UPDATE received, but no UNIFIED USDT balance was found.");
         }
 
         return;
@@ -1365,11 +962,11 @@ function connectPrivateWS() {
           if (order.symbol !== SYMBOL) continue;
 
           console.log(
-            `🧾 ORDER UPDATE: ${order.orderStatus || "UNKNOWN"} | ${
-              order.side
-            } | qty=${order.qty}`
+            `ðŸ§¾ ORDER UPDATE: ${order.orderStatus || "UNKNOWN"} | ${order.side} | qty=${order.qty}`
           );
         }
+
+        return;
       }
     });
 
@@ -1382,10 +979,9 @@ function connectPrivateWS() {
       }
 
       clearReserveFastTransferTimer();
-      clearReserveTransferState("private-ws-close");
 
       const wait = Math.min(30000, 2000 * Math.pow(2, retry));
-      console.log(`⚠️ PRIVATE WS CLOSED -> reconnect in ${wait}ms`);
+      console.log(`âš ï¸ PRIVATE WS CLOSED â†’ reconnect in ${wait}ms`);
 
       await sleep(wait);
       retry++;
@@ -1402,19 +998,14 @@ function connectPrivateWS() {
 
 // ================= TRADE WS =================
 function connectTradeWS() {
-  if (!TRADE_WS_URL) {
-    console.log("🧪 TRADE WS disabled for demo mode.");
-    return;
-  }
-
   let retry = 0;
 
   const openConnection = () => {
-    console.log(`🔌 Connecting TRADE WS (${TRADE_MODE})...`);
+    console.log(`ðŸ”Œ Connecting TRADE WS (${TRADE_MODE})...`);
     tradeWs = new WebSocket(TRADE_WS_URL);
 
     tradeWs.on("open", () => {
-      console.log("✅ TRADE WS CONNECTED");
+      console.log("âœ… TRADE WS CONNECTED");
       retry = 0;
 
       const { expires, signature } = generateWsAuth();
@@ -1432,23 +1023,23 @@ function connectTradeWS() {
       if (!msg) return;
 
       if (msg.op === "auth" && (msg.success === true || msg.retCode === 0)) {
-        console.log("🔐 TRADE WS AUTH OK");
+        console.log("ðŸ” TRADE WS AUTH OK");
         tradeReady = true;
 
         if (tradeHeartbeat) clearInterval(tradeHeartbeat);
-        tradeHeartbeat = startHeartbeat(tradeWs);
+        tradeHeartbeat = startHeartbeat(tradeWs, "TRADE");
 
         flushPendingTradeRequests();
         return;
       }
 
-      if (msg.op === "pong" || msg.ret_msg === "pong") return;
+      if (msg.op === "pong") return;
 
       if (msg.op === "order.create") {
         if (msg.retCode === 0) {
-          console.log("✅ POSITION CLOSE ACK:", msg.data);
+          console.log("âœ… POSITION CLOSE ACK:", msg.data);
         } else {
-          console.error("❌ POSITION CLOSE REJECTED:", msg);
+          console.error("â Œ POSITION CLOSE REJECTED:", msg);
         }
       }
     });
@@ -1462,7 +1053,7 @@ function connectTradeWS() {
       }
 
       const wait = Math.min(30000, 2000 * Math.pow(2, retry));
-      console.log(`⚠️ TRADE WS CLOSED -> reconnect in ${wait}ms`);
+      console.log(`âš ï¸ TRADE WS CLOSED â†’ reconnect in ${wait}ms`);
 
       await sleep(wait);
       retry++;
@@ -1484,7 +1075,7 @@ async function startWatchdog() {
       const now = Date.now();
       const staleMs = now - latestPositionUpdatedAt;
 
-      if (latestPositionUpdatedAt === 0 || staleMs > currentInterval) {
+      if (staleMs > currentInterval) {
         await runMonitorSafely("watchdog");
       }
 
@@ -1498,30 +1089,28 @@ async function startWatchdog() {
 
 // ================= GLOBAL CRASH PROTECTION =================
 process.on("unhandledRejection", async (err) => {
-  console.error("🔥 UNHANDLED REJECTION:", err?.message || err);
-  await sendTelegram(`🔥 UNHANDLED REJECTION\n${err?.message || String(err)}`);
+  console.error("ðŸ”¥ UNHANDLED REJECTION:", err?.message || err);
+  await sendTelegram(`ðŸ”¥ UNHANDLED REJECTION\n${err?.message || String(err)}`);
 });
 
 process.on("uncaughtException", async (err) => {
-  console.error("🔥 UNCAUGHT EXCEPTION:", err?.message || err);
-  await sendTelegram(`🔥 UNCAUGHT EXCEPTION\n${err?.message || String(err)}`);
+  console.error("ðŸ”¥ UNCAUGHT EXCEPTION:", err?.message || err);
+  await sendTelegram(`ðŸ”¥ UNCAUGHT EXCEPTION\n${err?.message || String(err)}`);
 });
 
 process.on("SIGTERM", async () => {
-  console.log("🛑 SIGTERM received");
+  console.log("ðŸ›‘ SIGTERM received");
   running = false;
   clearReserveFastTransferTimer();
-  clearReserveTransferState("sigterm");
-  await sendTelegram("🛑 Render sent SIGTERM. Bot stopping.");
+  await sendTelegram("ðŸ›‘ Render sent SIGTERM. Bot stopping.");
   process.exit(0);
 });
 
 process.on("SIGINT", async () => {
-  console.log("🛑 SIGINT received");
+  console.log("ðŸ›‘ SIGINT received");
   running = false;
   clearReserveFastTransferTimer();
-  clearReserveTransferState("sigint");
-  await sendTelegram("🛑 Process interrupted. Bot stopping.");
+  await sendTelegram("ðŸ›‘ Process interrupted. Bot stopping.");
   process.exit(0);
 });
 
@@ -1529,18 +1118,16 @@ process.on("SIGINT", async () => {
 async function startBot() {
   installTelegramConsoleMirror();
 
-  console.log("🤖 BOT STARTED...");
-  console.log(`📌 SYMBOL: ${SYMBOL}`);
-  console.log(`🌐 TRADE_MODE: ${TRADE_MODE}`);
-  console.log(`🌍 HTTP: ${HTTP_BASE_URL}`);
-  console.log(`🔌 PRIVATE WS: ${PRIVATE_WS_URL}`);
-  console.log(
-    `⚡ RESERVE_FAST_TRANSFER_DELAY_MS: ${RESERVE_FAST_TRANSFER_DELAY_MS}`
-  );
+  console.log("ðŸ¤– BOT STARTED...");
+  console.log(`ðŸ“Œ SYMBOL: ${SYMBOL}`);
+  console.log(`ðŸŒ TRADE_MODE: ${TRADE_MODE}`);
+  console.log(`ðŸŒ HTTP: ${HTTP_BASE_URL}`);
+  console.log(`ðŸ”Œ PRIVATE WS: ${PRIVATE_WS_URL}`);
+  console.log(`âš¡ RESERVE_FAST_TRANSFER_DELAY_MS: ${RESERVE_FAST_TRANSFER_DELAY_MS}`);
 
   await sendTelegram(
     [
-      "✅ BOT STARTED",
+      "âœ… BOT STARTED ON RENDER",
       `SYMBOL: ${SYMBOL}`,
       `MODE: ${TRADE_MODE}`,
       `HTTP: ${HTTP_BASE_URL}`,
@@ -1555,19 +1142,19 @@ async function startBot() {
   connectPrivateWS();
 
   if (TRADE_MODE !== "demo") {
-    console.log(`🔌 TRADE WS: ${TRADE_WS_URL}`);
+    console.log(`ðŸ”Œ TRADE WS: ${TRADE_WS_URL}`);
     connectTradeWS();
   } else {
-    console.log("🧪 DEMO MODE: TRADE WS disabled, REST fallback enabled.");
+    console.log("ðŸ§ª DEMO MODE: TRADE WS disabled, REST fallback enabled.");
   }
 
+  // Original logic preserved
   startAutoTransfer();
+
+  // Original reserve logic preserved as fallback, wallet WS adds faster trigger
   startUTAReserveMaintainer();
-  await startWatchdog();
+
+  startWatchdog();
 }
 
-startBot().catch(async (err) => {
-  console.error("FATAL START ERROR:", err?.message || err);
-  await sendTelegram(`FATAL START ERROR\n${err?.message || String(err)}`);
-  process.exit(1);
-});
+startBot();
