@@ -497,11 +497,12 @@ function maybeTriggerFastReserveTransferFromWallet(
 ) {
   if (!Number.isFinite(balance)) return;
 
-  const excess = roundDown(balance - UTA_RESERVE_BALANCE, 6);
+  const delta = roundDown(balance - UTA_RESERVE_BALANCE, 6);
+  const absDelta = Math.abs(delta);
 
-  if (excess >= RESERVE_TRANSFER_MIN_AMOUNT) {
+  if (absDelta >= RESERVE_TRANSFER_MIN_AMOUNT) {
     console.log(
-      `⚡ Wallet WS detected UTA USDT excess=${excess}. Scheduling fast transfer check...`
+      `⚡ Wallet WS detected UTA reserve delta=${delta}. Scheduling fast reserve check...`
     );
     scheduleFastReserveTransferCheck(reason);
   }
@@ -794,6 +795,51 @@ async function transferExcessUTAToFunding(amount) {
   }
 }
 
+// ================= FUNDING -> UTA RESERVE TOP UP =================
+async function transferReserveDeficitFundingToUTA(amount) {
+  if (TRADE_MODE !== "mainnet") {
+    console.log("🧪 Skipping UTA reserve top-up (Demo/Testnet mode active)");
+    return;
+  }
+
+  const normalizedAmount = roundDown(amount, 6);
+
+  if (!Number.isFinite(normalizedAmount) || normalizedAmount < RESERVE_TRANSFER_MIN_AMOUNT) {
+    console.log(
+      `ℹ️ UTA reserve top-up skipped. Amount too small: ${normalizedAmount} USDT`
+    );
+    return;
+  }
+
+  try {
+    const body = {
+      transferId: crypto.randomUUID(),
+      coin: "USDT",
+      amount: String(normalizedAmount),
+      fromAccountType: "FUND",
+      toAccountType: "UNIFIED",
+    };
+
+    const data = await bybitPost("/v5/asset/transfer/inter-transfer", body);
+
+    if (data?.retCode !== 0) {
+      console.warn(
+        `⚠️ FUND -> UTA reserve top-up failed: ${data?.retMsg || "unknown transfer error"}`
+      );
+      return;
+    }
+
+    console.log(
+      `🏦 Reserve maintained: transferred ${normalizedAmount} USDT from Funding to UTA to restore reserve.`
+    );
+  } catch (err) {
+    console.error(
+      "FUND -> UTA RESERVE TOP-UP ERROR:",
+      err.response?.data || err.message
+    );
+  }
+}
+
 async function maintainUTAReserveBalance(source = "interval") {
   if (isReserveMaintaining) {
     console.log(
@@ -823,9 +869,14 @@ async function maintainUTAReserveBalance(source = "interval") {
       `🏦 UTA USDT walletBalance: ${utaUsdtBalance} | reserve target: ${UTA_RESERVE_BALANCE} | source: ${source}`
     );
 
-    const excess = roundDown(utaUsdtBalance - UTA_RESERVE_BALANCE, 6);
+    const delta = roundDown(utaUsdtBalance - UTA_RESERVE_BALANCE, 6);
 
-    if (excess >= RESERVE_TRANSFER_MIN_AMOUNT) {
+    if (Math.abs(delta) < RESERVE_TRANSFER_MIN_AMOUNT) {
+      console.log("✅ UTA reserve OK. No transfer needed.");
+      return;
+    }
+
+    if (delta > 0) {
       const hasOpenPosition = await hasOpenPositionForReserveProtection();
 
       if (hasOpenPosition) {
@@ -836,12 +887,18 @@ async function maintainUTAReserveBalance(source = "interval") {
       }
 
       console.log(
-        `💡 UTA balance exceeds reserve by ${excess} USDT. Transferring excess to Funding...`
+        `💡 UTA balance exceeds reserve by ${delta} USDT. Transferring excess to Funding...`
       );
-      await transferExcessUTAToFunding(excess);
-    } else {
-      console.log("✅ UTA reserve OK. No excess transfer needed.");
+      await transferExcessUTAToFunding(delta);
+      return;
     }
+
+    const deficit = roundDown(Math.abs(delta), 6);
+
+    console.log(
+      `💡 UTA balance is below reserve by ${deficit} USDT. Topping up from Funding...`
+    );
+    await transferReserveDeficitFundingToUTA(deficit);
   } catch (err) {
     console.error("MAINTAIN UTA RESERVE ERROR:", err.message);
   } finally {
