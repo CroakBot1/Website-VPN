@@ -39,6 +39,16 @@ const RESERVE_TRANSFER_MIN_AMOUNT = Number(
 const RESERVE_FAST_TRANSFER_DELAY_MS = Number(
   process.env.RESERVE_FAST_TRANSFER_DELAY_MS ?? 1000
 );
+const RESERVE_BALANCE_CACHE_TTL_MS = Math.max(
+  RESERVE_CHECK_INTERVAL_MS,
+  RESERVE_FAST_TRANSFER_DELAY_MS + 1000,
+  5000
+);
+const RESERVE_TRANSFER_SETTLE_MS = Math.max(
+  RESERVE_FAST_TRANSFER_DELAY_MS + 2500,
+  RESERVE_CHECK_INTERVAL_MS + 1000,
+  4000
+);
 
 /**
  * TRADE_MODE:
@@ -145,6 +155,15 @@ let latestPositionUpdatedAt = 0;
 let latestUtaUsdtWalletBalance = null;
 let latestUtaUsdtWalletBalanceUpdatedAt = 0;
 let reserveFastTransferTimer = null;
+let reserveTransferState = {
+  inFlight: false,
+  direction: null,
+  amount: 0,
+  source: null,
+  startedAt: 0,
+  expectedBalance: null,
+  settleTimer: null,
+};
 
 const pendingTradeRequests = [];
 
@@ -441,10 +460,109 @@ async function getPosition() {
 // ================= RESERVE HELPERS =================
 function setLatestUTAUsdtWalletBalance(balance) {
   const normalized = Number(balance);
-  if (!Number.isFinite(normalized)) return;
+  if (!Number.isFinite(normalized)) return latestUtaUsdtWalletBalance;
+
+  const previousBalance = latestUtaUsdtWalletBalance;
 
   latestUtaUsdtWalletBalance = normalized;
   latestUtaUsdtWalletBalanceUpdatedAt = Date.now();
+
+  return previousBalance;
+}
+
+function invalidateLatestUTAUsdtWalletBalanceCache() {
+  latestUtaUsdtWalletBalanceUpdatedAt = 0;
+}
+
+function hasFreshUTAUsdtWalletBalance(maxAgeMs = RESERVE_BALANCE_CACHE_TTL_MS) {
+  return (
+    latestUtaUsdtWalletBalance !== null &&
+    Date.now() - latestUtaUsdtWalletBalanceUpdatedAt <= maxAgeMs
+  );
+}
+
+function clearReserveTransferState(reason = "clear") {
+  if (reserveTransferState.settleTimer) {
+    clearTimeout(reserveTransferState.settleTimer);
+  }
+
+  reserveTransferState = {
+    inFlight: false,
+    direction: null,
+    amount: 0,
+    source: null,
+    startedAt: 0,
+    expectedBalance: null,
+    settleTimer: null,
+  };
+
+  console.log(`ℹ️ Reserve transfer state cleared [${reason}]`);
+}
+
+function isReserveTransferInFlight() {
+  return reserveTransferState.inFlight;
+}
+
+function markReserveTransferInFlight({
+  direction,
+  amount,
+  source,
+  expectedBalance = UTA_RESERVE_BALANCE,
+}) {
+  if (reserveTransferState.settleTimer) {
+    clearTimeout(reserveTransferState.settleTimer);
+  }
+
+  reserveTransferState = {
+    inFlight: true,
+    direction,
+    amount,
+    source,
+    startedAt: Date.now(),
+    expectedBalance,
+    settleTimer: null,
+  };
+
+  invalidateLatestUTAUsdtWalletBalanceCache();
+
+  reserveTransferState.settleTimer = setTimeout(async () => {
+    const snapshot = { ...reserveTransferState };
+    clearReserveTransferState(`settle-timeout:${snapshot.direction || "unknown"}`);
+
+    try {
+      console.log(
+        `⏲️ Reserve transfer settle window expired. Rechecking reserve... [${
+          snapshot.source || "unknown"
+        }]`
+      );
+      await maintainUTAReserveBalance(
+        `post-transfer-settle:${snapshot.direction || "unknown"}`
+      );
+    } catch (err) {
+      console.error("POST TRANSFER SETTLE CHECK ERROR:", err.message);
+    }
+  }, RESERVE_TRANSFER_SETTLE_MS);
+
+  console.log(
+    `🚚 Reserve transfer in-flight | direction=${direction} | amount=${amount} | expectedBalance=${expectedBalance} | settleMs=${RESERVE_TRANSFER_SETTLE_MS} | source=${source}`
+  );
+}
+
+function maybeFinalizeReserveTransferFromBalance(balance, reason = "wallet-update") {
+  if (!reserveTransferState.inFlight) return false;
+  if (!Number.isFinite(balance)) return false;
+
+  const expectedBalance = Number(reserveTransferState.expectedBalance);
+  if (!Number.isFinite(expectedBalance)) return false;
+
+  const delta = Math.abs(roundDown(balance - expectedBalance, 6));
+  if (delta >= RESERVE_TRANSFER_MIN_AMOUNT) return false;
+
+  console.log(
+    `✅ Reserve transfer settled from ${reason}. balance=${balance} | expected=${expectedBalance}`
+  );
+  clearReserveTransferState(`balanced:${reason}`);
+  return true;
 }
 
 function extractUnifiedUsdtWalletBalanceFromWalletStream(data) {
@@ -475,12 +593,26 @@ function clearReserveFastTransferTimer() {
 function scheduleFastReserveTransferCheck(reason = "wallet-stream") {
   if (TRADE_MODE !== "mainnet") return;
 
+  if (isReserveTransferInFlight()) {
+    console.log(
+      `⏳ Fast reserve check skipped because a reserve transfer is still settling. [${reason}]`
+    );
+    return;
+  }
+
   clearReserveFastTransferTimer();
 
   reserveFastTransferTimer = setTimeout(async () => {
     reserveFastTransferTimer = null;
 
     try {
+      if (isReserveTransferInFlight()) {
+        console.log(
+          `⏳ Fast reserve check skipped on execution because a reserve transfer is still settling. [${reason}]`
+        );
+        return;
+      }
+
       console.log(
         `⚡ Fast reserve transfer check triggered (${reason}) after ${RESERVE_FAST_TRANSFER_DELAY_MS}ms`
       );
@@ -493,19 +625,42 @@ function scheduleFastReserveTransferCheck(reason = "wallet-stream") {
 
 function maybeTriggerFastReserveTransferFromWallet(
   balance,
-  reason = "wallet-stream"
+  reason = "wallet-stream",
+  previousBalance = null
 ) {
   if (!Number.isFinite(balance)) return;
 
+  maybeFinalizeReserveTransferFromBalance(balance, `${reason}-balance-update`);
+
   const delta = roundDown(balance - UTA_RESERVE_BALANCE, 6);
   const absDelta = Math.abs(delta);
+  const balanceChange =
+    Number.isFinite(previousBalance) && previousBalance !== null
+      ? roundDown(balance - previousBalance, 6)
+      : null;
 
-  if (absDelta >= RESERVE_TRANSFER_MIN_AMOUNT) {
-    console.log(
-      `⚡ Wallet WS detected UTA reserve delta=${delta}. Scheduling fast reserve check...`
-    );
-    scheduleFastReserveTransferCheck(reason);
+  if (absDelta < RESERVE_TRANSFER_MIN_AMOUNT) return;
+
+  if (
+    balanceChange !== null &&
+    Math.abs(balanceChange) < RESERVE_TRANSFER_MIN_AMOUNT
+  ) {
+    return;
   }
+
+  if (isReserveTransferInFlight()) {
+    console.log(
+      `⏳ Wallet WS detected reserve delta=${delta}, but reserve transfer is already settling. No duplicate fast check.`
+    );
+    return;
+  }
+
+  console.log(
+    `⚡ Wallet WS detected UTA reserve delta=${delta}${
+      balanceChange === null ? "" : ` | balanceChange=${balanceChange}`
+    }. Scheduling fast reserve check...`
+  );
+  scheduleFastReserveTransferCheck(reason);
 }
 
 // ================= OPEN POSITION GUARD =================
@@ -578,10 +733,19 @@ async function closePositionViaRest(side, size) {
 }
 
 // ================= UTA BALANCE CHECK =================
-async function getUTAUsdtWalletBalance() {
+async function getUTAUsdtWalletBalance(options = {}) {
+  const {
+    preferCache = true,
+    maxAgeMs = RESERVE_BALANCE_CACHE_TTL_MS,
+  } = options;
+
   if (TRADE_MODE !== "mainnet") {
     console.log("🧪 Skipping UTA reserve check balance fetch (Demo/Testnet mode active)");
     return null;
+  }
+
+  if (preferCache && hasFreshUTAUsdtWalletBalance(maxAgeMs)) {
+    return latestUtaUsdtWalletBalance;
   }
 
   try {
@@ -599,6 +763,7 @@ async function getUTAUsdtWalletBalance() {
 
     if (!usdtCoin) {
       console.log("ℹ️ No USDT coin entry found in UTA wallet-balance response");
+      setLatestUTAUsdtWalletBalance(0);
       return 0;
     }
 
@@ -610,6 +775,63 @@ async function getUTAUsdtWalletBalance() {
   } catch (err) {
     console.error(
       "GET UTA USDT BALANCE ERROR:",
+      err.response?.data || err.message
+    );
+    return null;
+  }
+}
+
+async function getInternalTransferAvailableAmount(fromAccountType, toAccountType) {
+  if (TRADE_MODE !== "mainnet") {
+    console.log(
+      `🧪 Skipping internal transfer capacity fetch (${fromAccountType} -> ${toAccountType}) in Demo/Testnet mode`
+    );
+    return null;
+  }
+
+  try {
+    const data = await bybitGet(
+      "/v5/asset/transfer/query-account-coin-balance",
+      {
+        accountType: fromAccountType,
+        toAccountType,
+        coin: "USDT",
+        withTransferSafeAmount: 1,
+      }
+    );
+
+    if (data?.retCode !== 0) {
+      throw new Error(data?.retMsg || "Unknown internal transfer balance error");
+    }
+
+    const balance = data?.result?.balance || {};
+    const transferSafeAmount = Number(balance.transferSafeAmount || NaN);
+    const transferBalance = Number(balance.transferBalance || NaN);
+    const walletBalance = Number(balance.walletBalance || NaN);
+
+    const available = Number.isFinite(transferSafeAmount)
+      ? transferSafeAmount
+      : Number.isFinite(transferBalance)
+      ? transferBalance
+      : Number.isFinite(walletBalance)
+      ? walletBalance
+      : 0;
+
+    return {
+      available: Math.max(0, roundDown(available, 6)),
+      transferSafeAmount: Number.isFinite(transferSafeAmount)
+        ? roundDown(transferSafeAmount, 6)
+        : null,
+      transferBalance: Number.isFinite(transferBalance)
+        ? roundDown(transferBalance, 6)
+        : null,
+      walletBalance: Number.isFinite(walletBalance)
+        ? roundDown(walletBalance, 6)
+        : null,
+    };
+  } catch (err) {
+    console.error(
+      `GET INTERNAL TRANSFER CAPACITY ERROR (${fromAccountType} -> ${toAccountType}):`,
       err.response?.data || err.message
     );
     return null;
@@ -743,17 +965,20 @@ function startAutoTransfer() {
 }
 
 // ================= UTA EXCESS -> FUNDING =================
-async function transferExcessUTAToFunding(amount) {
+async function transferExcessUTAToFunding(amount, source = "reserve-excess") {
   if (TRADE_MODE !== "mainnet") {
     console.log("🧪 Skipping UTA excess transfer (Demo/Testnet mode active)");
     return;
   }
 
-  const normalizedAmount = roundDown(amount, 6);
+  const requestedAmount = roundDown(amount, 6);
 
-  if (!Number.isFinite(normalizedAmount) || normalizedAmount < RESERVE_TRANSFER_MIN_AMOUNT) {
+  if (
+    !Number.isFinite(requestedAmount) ||
+    requestedAmount < RESERVE_TRANSFER_MIN_AMOUNT
+  ) {
     console.log(
-      `ℹ️ UTA excess transfer skipped. Amount too small: ${normalizedAmount} USDT`
+      `ℹ️ UTA excess transfer skipped. Amount too small: ${requestedAmount} USDT`
     );
     return;
   }
@@ -764,6 +989,30 @@ async function transferExcessUTAToFunding(amount) {
       "⏸️ UTA -> FUND transfer skipped because there is still an open position."
     );
     return;
+  }
+
+  const capacity = await getInternalTransferAvailableAmount("UNIFIED", "FUND");
+  if (!capacity) {
+    console.warn("⚠️ UTA -> FUND transfer skipped: unable to read transfer capacity.");
+    return;
+  }
+
+  const normalizedAmount = roundDown(
+    Math.min(requestedAmount, Number(capacity.available || 0)),
+    6
+  );
+
+  if (normalizedAmount < RESERVE_TRANSFER_MIN_AMOUNT) {
+    console.log(
+      `ℹ️ UTA -> FUND transfer skipped. Transferable amount too small: ${normalizedAmount} USDT | requested=${requestedAmount}`
+    );
+    return;
+  }
+
+  if (normalizedAmount < requestedAmount) {
+    console.log(
+      `ℹ️ UTA -> FUND transfer capped by Bybit transferable amount. requested=${requestedAmount} | available=${capacity.available} | sending=${normalizedAmount}`
+    );
   }
 
   try {
@@ -784,6 +1033,13 @@ async function transferExcessUTAToFunding(amount) {
       return;
     }
 
+    markReserveTransferInFlight({
+      direction: "UNIFIED->FUND",
+      amount: normalizedAmount,
+      source,
+      expectedBalance: UTA_RESERVE_BALANCE,
+    });
+
     console.log(
       `💼 Reserve maintained: transferred ${normalizedAmount} USDT excess from UTA to Funding.`
     );
@@ -796,19 +1052,51 @@ async function transferExcessUTAToFunding(amount) {
 }
 
 // ================= FUNDING -> UTA RESERVE TOP UP =================
-async function transferReserveDeficitFundingToUTA(amount) {
+async function transferReserveDeficitFundingToUTA(
+  amount,
+  source = "reserve-deficit"
+) {
   if (TRADE_MODE !== "mainnet") {
     console.log("🧪 Skipping UTA reserve top-up (Demo/Testnet mode active)");
     return;
   }
 
-  const normalizedAmount = roundDown(amount, 6);
+  const requestedAmount = roundDown(amount, 6);
 
-  if (!Number.isFinite(normalizedAmount) || normalizedAmount < RESERVE_TRANSFER_MIN_AMOUNT) {
+  if (
+    !Number.isFinite(requestedAmount) ||
+    requestedAmount < RESERVE_TRANSFER_MIN_AMOUNT
+  ) {
     console.log(
-      `ℹ️ UTA reserve top-up skipped. Amount too small: ${normalizedAmount} USDT`
+      `ℹ️ UTA reserve top-up skipped. Amount too small: ${requestedAmount} USDT`
     );
     return;
+  }
+
+  const capacity = await getInternalTransferAvailableAmount("FUND", "UNIFIED");
+  if (!capacity) {
+    console.warn(
+      "⚠️ FUND -> UTA reserve top-up skipped: unable to read transfer capacity."
+    );
+    return;
+  }
+
+  const normalizedAmount = roundDown(
+    Math.min(requestedAmount, Number(capacity.available || 0)),
+    6
+  );
+
+  if (normalizedAmount < RESERVE_TRANSFER_MIN_AMOUNT) {
+    console.log(
+      `ℹ️ FUND -> UTA reserve top-up skipped. Transferable amount too small: ${normalizedAmount} USDT | requested=${requestedAmount}`
+    );
+    return;
+  }
+
+  if (normalizedAmount < requestedAmount) {
+    console.log(
+      `ℹ️ FUND -> UTA reserve top-up capped by Bybit transferable amount. requested=${requestedAmount} | available=${capacity.available} | sending=${normalizedAmount}`
+    );
   }
 
   try {
@@ -829,6 +1117,13 @@ async function transferReserveDeficitFundingToUTA(amount) {
       return;
     }
 
+    markReserveTransferInFlight({
+      direction: "FUND->UNIFIED",
+      amount: normalizedAmount,
+      source,
+      expectedBalance: UTA_RESERVE_BALANCE,
+    });
+
     console.log(
       `🏦 Reserve maintained: transferred ${normalizedAmount} USDT from Funding to UTA to restore reserve.`
     );
@@ -848,6 +1143,13 @@ async function maintainUTAReserveBalance(source = "interval") {
     return;
   }
 
+  if (isReserveTransferInFlight()) {
+    console.log(
+      `⏳ Reserve transfer still settling, skipping maintenance cycle... [${source}]`
+    );
+    return;
+  }
+
   isReserveMaintaining = true;
 
   try {
@@ -856,7 +1158,8 @@ async function maintainUTAReserveBalance(source = "interval") {
       return;
     }
 
-    const utaUsdtBalance = await getUTAUsdtWalletBalance();
+    const preferCache = source !== "startup";
+    const utaUsdtBalance = await getUTAUsdtWalletBalance({ preferCache });
 
     if (utaUsdtBalance === null) {
       console.warn(
@@ -864,6 +1167,8 @@ async function maintainUTAReserveBalance(source = "interval") {
       );
       return;
     }
+
+    maybeFinalizeReserveTransferFromBalance(utaUsdtBalance, `maintain:${source}`);
 
     console.log(
       `🏦 UTA USDT walletBalance: ${utaUsdtBalance} | reserve target: ${UTA_RESERVE_BALANCE} | source: ${source}`
@@ -889,7 +1194,7 @@ async function maintainUTAReserveBalance(source = "interval") {
       console.log(
         `💡 UTA balance exceeds reserve by ${delta} USDT. Transferring excess to Funding...`
       );
-      await transferExcessUTAToFunding(delta);
+      await transferExcessUTAToFunding(delta, source);
       return;
     }
 
@@ -898,7 +1203,7 @@ async function maintainUTAReserveBalance(source = "interval") {
     console.log(
       `💡 UTA balance is below reserve by ${deficit} USDT. Topping up from Funding...`
     );
-    await transferReserveDeficitFundingToUTA(deficit);
+    await transferReserveDeficitFundingToUTA(deficit, source);
   } catch (err) {
     console.error("MAINTAIN UTA RESERVE ERROR:", err.message);
   } finally {
@@ -1035,13 +1340,17 @@ function connectPrivateWS() {
         const wsBalance = extractUnifiedUsdtWalletBalanceFromWalletStream(msg.data);
 
         if (wsBalance !== null) {
-          setLatestUTAUsdtWalletBalance(wsBalance);
+          const previousBalance = setLatestUTAUsdtWalletBalance(wsBalance);
 
           console.log(
             `💰 WALLET WS UPDATE: UTA USDT walletBalance=${wsBalance} | reserve=${UTA_RESERVE_BALANCE}`
           );
 
-          maybeTriggerFastReserveTransferFromWallet(wsBalance, "wallet-stream");
+          maybeTriggerFastReserveTransferFromWallet(
+            wsBalance,
+            "wallet-stream",
+            previousBalance
+          );
         } else {
           console.log(
             "ℹ️ WALLET WS UPDATE received, but no UNIFIED USDT balance was found."
@@ -1073,6 +1382,7 @@ function connectPrivateWS() {
       }
 
       clearReserveFastTransferTimer();
+      clearReserveTransferState("private-ws-close");
 
       const wait = Math.min(30000, 2000 * Math.pow(2, retry));
       console.log(`⚠️ PRIVATE WS CLOSED -> reconnect in ${wait}ms`);
@@ -1201,6 +1511,7 @@ process.on("SIGTERM", async () => {
   console.log("🛑 SIGTERM received");
   running = false;
   clearReserveFastTransferTimer();
+  clearReserveTransferState("sigterm");
   await sendTelegram("🛑 Render sent SIGTERM. Bot stopping.");
   process.exit(0);
 });
@@ -1209,6 +1520,7 @@ process.on("SIGINT", async () => {
   console.log("🛑 SIGINT received");
   running = false;
   clearReserveFastTransferTimer();
+  clearReserveTransferState("sigint");
   await sendTelegram("🛑 Process interrupted. Bot stopping.");
   process.exit(0);
 });
