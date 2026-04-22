@@ -1,72 +1,43 @@
 import axios from "axios";
 import crypto from "crypto";
-import dotenv from "dotenv";
 import WebSocket from "ws";
 
-dotenv.config();
+// ================= HARD CODED CONFIG =================
+const API_KEY = "sEbf7a0CPQAli19SyJ";
+const API_SECRET = "sCxIwnJFYFvgoeBf7hgLY7rqCN4rhUVx3mre";
 
-// ================= CONFIG =================
-const API_KEY = process.env.API_KEY;
-const API_SECRET = process.env.API_SECRET;
+const TRADE_MODE = "mainnet";
+const SYMBOL = "BTCUSDT";
+const MAX_LOSS = -70;
+const TAKE_PROFIT = 90;
 
-const SYMBOL = process.env.SYMBOL || "BTCUSDT";
-const MAX_LOSS = Number(process.env.MAX_LOSS ?? -70);
-const TAKE_PROFIT = Number(process.env.TAKE_PROFIT ?? 90);
+const FORCE_REST_CLOSE_ON_DEMO = false;
 
+const TELEGRAM_BOT_TOKEN = "8369390272:AAFNNmih7ky5UqtZ7Qh3tSX0G-g9Q2CYIeA";
+const TELEGRAM_CHAT_ID = "7658273737";
+const TELEGRAM_LOGS_ENABLED = true;
+const TELEGRAM_HEARTBEAT_MINUTES = 10;
+const TELEGRAM_SILENT = false;
+
+const TRANSFER_AMOUNT = 0;
+
+const UTA_RESERVE_BALANCE = 501;
+const RESERVE_CHECK_INTERVAL_MS = 3000;
+const RESERVE_TRANSFER_MIN_AMOUNT = 0.01;
+const RESERVE_FAST_TRANSFER_DELAY_MS = 1000;
+
+const RECV_WINDOW = "5000";
+const POSITION_CACHE_TTL = 3000;
+const CLOSE_VERIFY_RETRIES = 10;
+const CLOSE_VERIFY_DELAY = 1000;
+const HTTP_TIMEOUT_MS = 15000;
+const TELEGRAM_TIMEOUT_MS = 15000;
+
+// ================= RUNTIME CONFIG =================
 const FAST_INTERVAL = 2000;
 const SLOW_INTERVAL = 10000;
 let currentInterval = SLOW_INTERVAL;
-
-const RECV_WINDOW = String(process.env.RECV_WINDOW ?? "5000");
-const POSITION_CACHE_TTL = Number(process.env.POSITION_CACHE_TTL ?? 3000);
-const CLOSE_VERIFY_RETRIES = Number(process.env.CLOSE_VERIFY_RETRIES ?? 10);
-const CLOSE_VERIFY_DELAY = Number(process.env.CLOSE_VERIFY_DELAY ?? 1000);
-const HTTP_TIMEOUT_MS = Number(process.env.HTTP_TIMEOUT_MS ?? 15000);
-const TELEGRAM_TIMEOUT_MS = Number(process.env.TELEGRAM_TIMEOUT_MS ?? 15000);
-
-// ================= TRANSFER CONFIG =================
-const TRANSFER_AMOUNT = Number(process.env.TRANSFER_AMOUNT ?? 0);
 const TRANSFER_INTERVAL_MS = 5 * 60 * 1000;
-
-// ================= NEW RESERVE CONFIG =================
-const UTA_RESERVE_BALANCE = Number(process.env.UTA_RESERVE_BALANCE ?? 501);
-const RESERVE_CHECK_INTERVAL_MS = Number(
-  process.env.RESERVE_CHECK_INTERVAL_MS ?? 60 * 1000
-);
-const RESERVE_TRANSFER_MIN_AMOUNT = Number(
-  process.env.RESERVE_TRANSFER_MIN_AMOUNT ?? 0.01
-);
-
-// ================= NEW FAST RESERVE WS CONFIG =================
-const RESERVE_FAST_TRANSFER_DELAY_MS = Number(
-  process.env.RESERVE_FAST_TRANSFER_DELAY_MS ?? 1000
-);
-
-/**
- * TRADE_MODE:
- * - mainnet = actual live account
- * - demo    = bybit demo trading
- * - testnet = bybit testnet
- */
-const TRADE_MODE = String(process.env.TRADE_MODE || "mainnet").toLowerCase();
-
-const FORCE_REST_CLOSE_ON_DEMO =
-  String(process.env.FORCE_REST_CLOSE_ON_DEMO ?? "true").toLowerCase() === "true";
-
-// ================= TELEGRAM CONFIG =================
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
-const TELEGRAM_LOGS_ENABLED =
-  String(process.env.TELEGRAM_LOGS_ENABLED ?? "true").toLowerCase() === "true";
-const TELEGRAM_HEARTBEAT_MINUTES = Number(process.env.TELEGRAM_HEARTBEAT_MINUTES ?? 10);
-const TELEGRAM_SILENT =
-  String(process.env.TELEGRAM_SILENT ?? "false").toLowerCase() === "true";
-
-let telegramHeartbeat = null;
-let lastTelegramMessageAt = 0;
-const TELEGRAM_MIN_GAP_MS = 10000;
-const telegramQueue = [];
-let telegramSending = false;
 
 // ================= ENV URLS =================
 const HTTP_BASE_URL =
@@ -90,7 +61,7 @@ const TRADE_WS_URL =
 
 // ================= VALIDATION =================
 if (!API_KEY || !API_SECRET) {
-  throw new Error("Missing API_KEY or API_SECRET in .env");
+  throw new Error("Missing API_KEY or API_SECRET");
 }
 
 if (!["mainnet", "demo", "testnet"].includes(TRADE_MODE)) {
@@ -115,12 +86,17 @@ let tradeHeartbeat = null;
 let latestPosition = null;
 let latestPositionUpdatedAt = 0;
 
-// ================= NEW FAST RESERVE STATE =================
 let latestUtaUsdtWalletBalance = null;
 let latestUtaUsdtWalletBalanceUpdatedAt = 0;
 let reserveFastTransferTimer = null;
 
 const pendingTradeRequests = [];
+
+let telegramHeartbeat = null;
+let lastTelegramMessageAt = 0;
+const TELEGRAM_MIN_GAP_MS = 10000;
+const telegramQueue = [];
+let telegramSending = false;
 
 // ================= LOGGING HELPERS =================
 const rawConsole = {
@@ -157,7 +133,7 @@ function roundDown(value, decimals = 6) {
 }
 
 async function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function sendTelegram(message, options = {}) {
@@ -277,11 +253,11 @@ function startHeartbeat(ws) {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ op: "ping" }));
     }
-  }, 20_000);
+  }, 20000);
 }
 
 function generateWsAuth() {
-  const expires = Date.now() + 10_000;
+  const expires = Date.now() + 10000;
   const signature = hmacSha256(`GET/realtime${expires}`);
   return { expires, signature };
 }
@@ -365,9 +341,15 @@ function setLatestUTAUsdtWalletBalance(balance) {
 }
 
 function extractUnifiedUsdtWalletBalanceFromWalletStream(data) {
-  if (!Array.isArray(data)) return null;
+  const rows = Array.isArray(data)
+    ? data
+    : Array.isArray(data?.list)
+    ? data.list
+    : data
+    ? [data]
+    : [];
 
-  for (const account of data) {
+  for (const account of rows) {
     if (account?.accountType !== "UNIFIED") continue;
     if (!Array.isArray(account.coin)) continue;
 
@@ -422,7 +404,7 @@ function maybeTriggerFastReserveTransferFromWallet(balance, reason = "wallet-str
   }
 }
 
-// ================= OPEN POSITION GUARD FOR UTA -> FUND =================
+// ================= OPEN POSITION GUARD =================
 async function hasOpenPositionForReserveProtection() {
   try {
     const pos = await getPosition();
@@ -715,17 +697,13 @@ async function transferExcessUTAToFunding(amount) {
   const normalizedAmount = roundDown(amount, 6);
 
   if (!Number.isFinite(normalizedAmount) || normalizedAmount < RESERVE_TRANSFER_MIN_AMOUNT) {
-    console.log(
-      `ℹ️ UTA excess transfer skipped. Amount too small: ${normalizedAmount} USDT`
-    );
+    console.log(`ℹ️ UTA excess transfer skipped. Amount too small: ${normalizedAmount} USDT`);
     return;
   }
 
   const hasOpenPosition = await hasOpenPositionForReserveProtection();
   if (hasOpenPosition) {
-    console.log(
-      "⛔ UTA -> FUND transfer skipped because there is still an open position."
-    );
+    console.log("⛔ UTA -> FUND transfer skipped because there is still an open position.");
     return;
   }
 
@@ -807,9 +785,7 @@ async function maintainUTAReserveBalance(source = "interval") {
         return;
       }
 
-      console.log(
-        `💡 UTA balance exceeds reserve by ${excess} USDT. Transferring excess to Funding...`
-      );
+      console.log(`💡 UTA balance exceeds reserve by ${excess} USDT. Transferring excess to Funding...`);
       await transferExcessUTAToFunding(excess);
     } else {
       console.log("✅ UTA reserve OK. No excess transfer needed.");
@@ -829,6 +805,14 @@ function startUTAReserveMaintainer() {
   );
 
   maintainUTAReserveBalance("startup").catch(() => {});
+
+  setTimeout(() => {
+    maintainUTAReserveBalance("startup-retry-5s").catch(() => {});
+  }, 5000);
+
+  setTimeout(() => {
+    maintainUTAReserveBalance("startup-retry-15s").catch(() => {});
+  }, 15000);
 
   setInterval(() => {
     maintainUTAReserveBalance("interval").catch(() => {});
@@ -946,7 +930,7 @@ function connectPrivateWS() {
         return;
       }
 
-      if (msg.topic === "wallet" && Array.isArray(msg.data)) {
+      if (msg.topic === "wallet") {
         const wsBalance = extractUnifiedUsdtWalletBalanceFromWalletStream(msg.data);
 
         if (wsBalance !== null) {
@@ -958,7 +942,10 @@ function connectPrivateWS() {
 
           maybeTriggerFastReserveTransferFromWallet(wsBalance, "wallet-stream");
         } else {
-          console.log("ℹ️ WALLET WS UPDATE received, but no UNIFIED USDT balance was found.");
+          console.log(
+            "ℹ️ WALLET WS UPDATE received, but no UNIFIED USDT balance was found in payload.",
+            msg.data
+          );
         }
 
         return;
@@ -972,6 +959,8 @@ function connectPrivateWS() {
             `🧾 ORDER UPDATE: ${order.orderStatus || "UNKNOWN"} | ${order.side} | qty=${order.qty}`
           );
         }
+
+        return;
       }
     });
 
