@@ -23,8 +23,8 @@ const CLOSE_VERIFY_RETRIES = 10;
 const CLOSE_VERIFY_DELAY = 1000;
 
 // ================= TRANSFER CONFIG =================
-const TRANSFER_AMOUNT = Number(process.env.TRANSFER_AMOUNT ?? 0); // Default 50 USDT
-const TRANSFER_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes in milliseconds
+const TRANSFER_AMOUNT = Number(process.env.TRANSFER_AMOUNT ?? 50); // Default 50 USDT
+const TRANSFER_INTERVAL_MS = 60 * 60 * 1000; // 60 minutes in milliseconds
 
 // ================= NEW RESERVE CONFIG =================
 const UTA_RESERVE_BALANCE = Number(process.env.UTA_RESERVE_BALANCE ?? 501);
